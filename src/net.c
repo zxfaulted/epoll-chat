@@ -78,21 +78,6 @@ void remove_client(int epfd, int cur_fd, Client* clients[], int* clients_count)
     }
 }
 
-int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count,
-                      uint32_t message_id)
-{
-    if (!c || !clients)
-    {
-        return -1;
-    }
-    if (c->state == STATE_READY && c->name[0] != '\0')
-    {
-        broadcast_user_event(c, clients, clients_count, PKT_LEAVE, message_id);
-    }
-    remove_client(epfd, c->ei.fd, clients, clients_count);
-    return 0;
-}
-
 void reject_packet(int epfd, Client* c, int cur_fd, Client* clients[], int* clients_count,
                    const char* reason, uint32_t message_id)
 {
@@ -122,7 +107,7 @@ PacketState validate_packet_name(uint32_t msg_len, Header* h)
     {
         return PKT_BAD_ROOM_ID;
     }
-    if (msg_len == 0 || msg_len > PAYLOAD_SIZE)
+    if (msg_len == 0 || msg_len > MAX_NAME_LEN)
     {
         return PKT_BAD_PAYLOAD_SIZE;
     }
@@ -240,11 +225,6 @@ int set_client_name(Client* c, const char* msg, size_t msg_len)
         return -1;
     }
 
-    if (is_name_taken(clients, clients_count, msg))
-    {
-        return -1;
-    }
-
     memcpy(c->name, msg, msg_len);
     c->name[msg_len] = '\0';
 
@@ -255,8 +235,7 @@ int is_name_taken(Client* clients[], int clients_count, const char* name)
 {
     for (int i = 0; i < clients_count; i++)
     {
-        if (clients[i] && clients[i]->state == STATE_READY &&
-            strcasecmp(clients[i]->name, name) == 0)
+        if (clients[i] && clients[i]->state == STATE_READY && strcmp(clients[i]->name, name) == 0)
             return 1;
     }
     return 0;
@@ -281,27 +260,6 @@ void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* c
                 continue;
             }
         }
-    }
-}
-
-void broadcast_user_event(int epfd, Client* skip, Client* clients[], int clients_count,
-                          PacketType type, uint32_t message_id)
-{
-    for (int i = 0; i < clients_count; i++)
-    {
-        if (!skip)
-        {
-            return;
-        }
-        if (!clients[i] || skip == clients[i])
-        {
-            continue;
-        }
-        if (send_server_user_event(clients[i], message_id, type, skip->name, skip->id) < 0)
-        {
-            continue;
-        }
-        set_epollout_to_client(epfd, clients[i]);
     }
 }
 
@@ -343,6 +301,43 @@ int send_server_user_event(Client* c, uint32_t message_id, PacketType type, cons
 
     return enqueue_packet(c, &h, msg, msg_len);
 }
+
+void broadcast_user_event(int epfd, Client* skip, Client* clients[], int clients_count,
+                          PacketType type, uint32_t message_id)
+{
+    if (!skip)
+    {
+        return;
+    }
+    for (int i = 0; i < clients_count; i++)
+    {
+        if (!clients[i] || skip == clients[i])
+        {
+            continue;
+        }
+        if (send_server_user_event(clients[i], message_id, type, skip->name, skip->id) < 0)
+        {
+            continue;
+        }
+        set_epollout_to_client(epfd, clients[i]);
+    }
+}
+
+int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count,
+                      uint32_t message_id)
+{
+    if (!c || !clients)
+    {
+        return -1;
+    }
+    if (c->state == STATE_READY && c->name[0] != '\0')
+    {
+        broadcast_user_event(epfd, c, clients, *clients_count, PKT_LEAVE, message_id);
+    }
+    remove_client(epfd, c->ei.fd, clients, clients_count);
+    return 0;
+}
+
 // кладет пакет сообщения msg и длины len в out_buf
 // возвращает:
 // 0 успех

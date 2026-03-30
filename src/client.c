@@ -103,6 +103,7 @@ int main()
                         switch (c->state)
                         {
                             case STATE_WAIT_NAME:
+                            {
                                 if (bytes == 0)
                                 {
                                     printf("[ERROR] EMPTY NAME\n");
@@ -116,7 +117,10 @@ int main()
                                 h.type      = PKT_NAME;
                                 h.sender_id = 0;
                                 break;
+                            }
+
                             case STATE_READY:
+                            {
                                 if (bytes == 0)
                                 {
                                     continue;
@@ -124,10 +128,12 @@ int main()
                                 if (bytes > PAYLOAD_SIZE)
                                 {
                                     printf("[ERROR] MESSAGE TOO LONG\n");
+                                    continue;
                                 }
                                 h.type      = PKT_CHAT;
                                 h.sender_id = c->id;
                                 break;
+                            }
                         }
                         if (enqueue_packet(c, &h, out_buf, bytes) < 0)
                         {
@@ -149,7 +155,7 @@ int main()
             {
                 Client*  c = (Client*)ei;
                 char     msg[MESSAGE_SIZE];
-                uint32_t msg_len;
+                uint32_t msg_len = 0;
 
                 while (1)
                 {
@@ -185,41 +191,58 @@ int main()
                     switch (h.type)
                     {
                         case PKT_JOIN:
+                        {
                             char     joined_name[MAX_NAME_LEN + 1];
                             uint32_t joined_id = 0;
                             if (c->state == STATE_READY)
                             {
-                                parse_client_id_and_name(msg, msg_len, joined_id, joined_name);
+                                parse_client_id_and_name(msg, msg_len, &joined_id, joined_name);
                                 size_t joined_name_len = strlen(joined_name);
-                                printf("[JOIN] %.*s#%" PRIu32 "\n", joined_name_len, joined_name,
-                                       joined_id);
+                                printf("[JOIN] %.*s#%" PRIu32 "\n", (int)joined_name_len,
+                                       joined_name, joined_id);
                             }
                             else if (c->state != STATE_READY)
                             {
-                                parse_client_id_and_name(msg, msg_len, joined_id, joined_name);
+                                parse_client_id_and_name(msg, msg_len, &joined_id, joined_name);
                                 c->state               = STATE_READY;
                                 c->id                  = joined_id;
                                 size_t joined_name_len = strlen(joined_name);
                                 memcpy(c->name, joined_name, joined_name_len);
                                 c->name[joined_name_len] = '\0';
+                                printf("[REGISTER] as %s#%" PRIu32 "\n", c->name, c->id);
                             }
                             break;
+                        }
+
                         case PKT_LEAVE:
+                        {
                             uint32_t left_id;
                             char     left_name[MAX_NAME_LEN + 1];
                             parse_client_id_and_name(msg, msg_len, &left_id, left_name);
                             size_t left_name_len = strlen(left_name);
-                            printf("[LEAVE] %.*s#%" PRIu32 "\n", left_name_len, left_name, left_id);
+                            printf("[LEAVE] %.*s#%" PRIu32 "\n", (int)left_name_len, left_name,
+                                   left_id);
                             break;
+                        }
+
                         case PKT_CHAT:
-                            printf("#%" PRIu32 ": %.*s\n", c->id, msg_len, msg);
+                        {
+                            printf("#%" PRIu32 ": %.*s\n", h.sender_id, msg_len, msg);
                             break;
+                        }
+
                         case PKT_ERR:
+                        {
                             printf("[ERROR] %.*s\n", msg_len, msg);
                             break;
+                        }
+
                         default:
+                        {
                             const char* p_st = packet_state_str(h.type);
                             printf("[ERROR] UNKNOWN PACKET TYPE: %s\n", p_st);
+                            break;
+                        }
                     }
                 }
             }

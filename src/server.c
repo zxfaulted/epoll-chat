@@ -30,6 +30,15 @@ int main()
     server_sa.sin_family      = AF_INET;
     server_sa.sin_port        = htons(SERVER_PORT);
 
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
+    {
+        perror("setsockopt");
+        close(server_fd);
+        return 1;
+    }
+
     if (bind(server_fd, (struct sockaddr*)&server_sa, server_len) < 0)
     {
         perror("bind");
@@ -69,8 +78,9 @@ int main()
 
     struct epoll_event events[MAX_EVENTS];
 
-    int      clients_count = 0;
-    Client*  clients[MAX_CLIENTS];
+    int     clients_count = 0;
+    Client* clients[MAX_CLIENTS];
+    memset(clients, 0, sizeof(clients));
     uint32_t client_id  = 1;
     uint32_t message_id = 0;
     int      client_removed;
@@ -109,23 +119,23 @@ int main()
                             if (rc < 0)
                             {
                                 perror("recv_into_buf PKT_NAME");
-                                disconnect_client(epfd, c->ei.fd, clients, &clients_count);
+                                disconnect_client(epfd, c, clients, &clients_count, message_id++);
                                 continue;
                             }
                             Header h = {0};
                             rc       = try_pop_packet(c, &h, msg, &msg_len);
                             if (rc < 0)
                             {
-                                reject_packet(epfd, c->ei.fd, clients, &clients_count,
-                                              "POP_PACKET_ERROR");
+                                reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
+                                              "POP_PACKET_ERROR", message_id++);
                                 client_removed = 1;
                                 continue;
                             }
                             PacketState p_st = validate_packet_name(msg_len, &h);
                             if (p_st != PKT_OK)
                             {
-                                reject_packet(epfd, c->ei.fd, clients, &clients_count,
-                                              "VALIDATE_PACKET_NAME ERROR");
+                                reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
+                                              "VALIDATE_PACKET_NAME ERROR", message_id++);
                                 client_removed = 1;
                                 continue;
                             }
@@ -136,13 +146,14 @@ int main()
 
                             if (h.type != PKT_NAME)
                             {
-                                reject_packet(epfd, c->ei.fd, clients, &clients_count,
-                                              "EXPECTED TYPE: PKT_NAME, RECEIVED");
+                                reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
+                                              "EXPECTED TYPE: PKT_NAME, RECEIVED", message_id++);
                                 client_removed = 1;
                                 continue;
                             }
                             if (is_name_taken(clients, clients_count, msg))
                             {
+                                send_server_error(epfd, c, "NAME IS ALREADY TAKEN", message_id++);
                                 continue;
                             }
 
@@ -161,7 +172,7 @@ int main()
                                 {
                                     perror("recv_into_buf PKT_CHAT");
                                 }
-                                disconnect_client(epfd, c->ei.fd, clients, &clients_count);
+                                disconnect_client(epfd, c, clients, &clients_count, message_id++);
                                 client_removed = 1;
                                 continue;
                             }
@@ -202,8 +213,8 @@ int main()
                                 else
                                 {
                                     const char* p_st_str = packet_state_str(p_st);
-                                    reject_packet(epfd, c->ei.fd, clients, &clients_count,
-                                                  p_st_str);
+                                    reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
+                                                  p_st_str, message_id++);
                                     client_removed = 1;
                                     break;
                                 }
