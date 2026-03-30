@@ -157,18 +157,21 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
 void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* clients_count,
                        char msg[], int len);
 
-void send_server_error(Client* c, const char msg[], uint32_t message_id);
+void send_server_error(int epfd, Client* c, const char msg[], uint32_t message_id);
 int  send_server_join(int epfd, Client* c, const char* name, uint32_t message_id);
 int  recv_client_id_and_name(Client* c, Header* h, uint32_t* id, char name[]);
 int  set_epollout_to_client(int epfd, Client* c);
 int  unset_epollout_to_client(int epfd, Client* c);
 int  parse_client_id_and_name(char msg[], uint32_t msg_len, uint32_t* id, char name[]);
-void reject_packet(int epfd, int cur_fd, Client* clients[], int* clients_count, const char* reason);
+void reject_packet(int epfd, Client* c, int cur_fd, Client* clients[], int* clients_count,
+                   const char* reason, uint32_t message_id);
 
 const char* packet_state_str(PacketState st);
 int         set_client_name(Client* c, const char* msg, size_t msg_len);
 PacketState validate_packet_name(uint32_t msg_len, Header* h);
 PacketState validate_packet_chat(uint32_t msg_len, Header* h);
 int         is_name_taken(Client* clients[], int clients_count, const char* name);
-
+int         disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count,
+                              uint32_t message_id);
+int         is_name_taken(Client* clients[], int clients_count, const char* name);
 #endif
