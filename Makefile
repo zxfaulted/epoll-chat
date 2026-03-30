@@ -12,12 +12,12 @@ CC := gcc
 CFLAGS := -Wall -Wextra -pedantic -Iinclude -g -O0 -fsanitize=address -fno-omit-frame-pointer
 
 
-.PHONY: run run-server run-client clean
+.PHONY: run run-server run-client stop clean
 
-run: clean all
+run: stop clean all 
 	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+10+10 -hold -e "./$(SERVER)" &
 	sleep 0.1
-	xterm -xrm 'XTerm*selectToClipboard: true'-geometry 70x20+460+10 -hold -e "./$(CLIENT)" &
+	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+460+10 -hold -e "./$(CLIENT)" &
 	sleep 0.1
 	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+910+10 -hold -e "./$(CLIENT)" &
 
@@ -41,5 +41,9 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	mkdir -p $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-clean:
+stop:
+	-pkill -f ./$(SERVER)
+	-pkill -f ./$(CLIENT)
+
+clean: stop
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
