@@ -9,8 +9,9 @@ SERVER_OBJ := $(OBJ_DIR)/server.o $(OBJ_DIR)/net.o
 CLIENT_OBJ := $(OBJ_DIR)/client.o $(OBJ_DIR)/net.o
 SRC := $(SRC_DIR)/server.c $(SRC_DIR)/client.c
 CC := gcc
-CFLAGS := -Wall -Wextra -pedantic -Iinclude -g -O0 -fsanitize=address -fno-omit-frame-pointer
 
+#CFLAGS := -Wall -Wextra -pedantic -Iinclude -g -O0 -fsanitize=address -fno-omit-frame-pointer
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude
 
 .PHONY: run run-server run-client stop clean
 

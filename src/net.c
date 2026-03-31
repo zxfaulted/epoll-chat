@@ -1,5 +1,6 @@
 
 #include "net.h"
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -7,12 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
 #define ntohll(x) htonll(x)
 
-uint64_t htonll(uint64_t x)
+static uint64_t htonll(uint64_t x)
 {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     uint32_t low    = htonl((uint32_t)(x & 0xFFFFFFFFULL));
@@ -26,13 +28,18 @@ uint64_t htonll(uint64_t x)
 
 // strnlen из <string.h> не входит в ISO C11
 // для возможности сборки с -std=c11
-size_t my_strnlen(const char* s, size_t maxlen)
+// static size_t my_strnlen(const char* s, size_t maxlen)
+// {
+//     size_t i;
+//     for (i = 0; i < maxlen && s[i] != '\0'; i++)
+//     {
+//     }
+//     return i;
+// }
+
+uint32_t next_message_id(uint32_t* message_id)
 {
-    size_t i;
-    for (i = 0; i < maxlen && s[i] != '\0'; i++)
-    {
-    }
-    return i;
+    return ++(*message_id);
 }
 
 // 0 успех
@@ -53,7 +60,18 @@ int set_nonblocking(int server_fd)
     return 0;
 }
 
-void remove_client(int epfd, int cur_fd, Client* clients[], int* clients_count)
+int payload_to_str(const uint8_t payload[], size_t len, char out[], size_t out_cap)
+{
+    if ((size_t)len + 1 > out_cap)
+    {
+        return -1;
+    }
+    memcpy(out, payload, len);
+    out[len] = '\0';
+    return 0;
+}
+
+static void remove_client(int epfd, int cur_fd, Client* clients[], int* clients_count)
 {
 
     for (int i = 0; i < *clients_count; i++)
@@ -65,7 +83,7 @@ void remove_client(int epfd, int cur_fd, Client* clients[], int* clients_count)
             clients[*clients_count - 1] = NULL;
             (*clients_count)--;
 
-            printf("[DISCONNECT] Client #%d\n", temp->id);
+            printf("[DISCONNECT] Client #%" PRIu32 "\n", temp->id);
 
             if (epoll_ctl(epfd, EPOLL_CTL_DEL, cur_fd, NULL) < 0)
             {
@@ -79,7 +97,7 @@ void remove_client(int epfd, int cur_fd, Client* clients[], int* clients_count)
 }
 
 void reject_packet(int epfd, Client* c, int cur_fd, Client* clients[], int* clients_count,
-                   const char* reason, uint32_t message_id)
+                   const char* reason, uint32_t* message_id)
 {
     fprintf(stderr, "[REJECT] fd=%d reason=%s\n", cur_fd, reason);
     disconnect_client(epfd, c, clients, clients_count, message_id);
@@ -107,6 +125,14 @@ PacketState validate_packet_name(uint32_t msg_len, Header* h)
     {
         return PKT_BAD_ROOM_ID;
     }
+    if (h->timestamp != 0)
+    {
+        return PKT_BAD_TIMESTAMP;
+    }
+    if (h->message_id != 0)
+    {
+        return PKT_BAD_MESSAGE_ID;
+    }
     if (msg_len == 0 || msg_len > MAX_NAME_LEN)
     {
         return PKT_BAD_PAYLOAD_SIZE;
@@ -131,6 +157,18 @@ PacketState validate_packet_chat(uint32_t msg_len, Header* h)
     if (h->room_id != 0)
     {
         return PKT_BAD_ROOM_ID;
+    }
+    if (h->timestamp != 0)
+    {
+        return PKT_BAD_TIMESTAMP;
+    }
+    if (h->sender_id != 0)
+    {
+        return PKT_BAD_SENDER_ID;
+    }
+    if (h->message_id != 0)
+    {
+        return PKT_BAD_MESSAGE_ID;
     }
     if (msg_len == 0 || msg_len > PAYLOAD_SIZE)
     {
@@ -159,8 +197,29 @@ const char* packet_state_str(PacketState st)
             return "PKT_BAD_MESSAGE_ID";
         case PKT_BAD_PAYLOAD_SIZE:
             return "PKT_BAD_PAYLOAD_SIZE";
+        case PKT_BAD_TYPE:
+            return "PKT_BAD_TYPE";
         default:
             return "UNKNOWN_PACKET_STATE";
+    }
+}
+
+const char* packet_type_str(PacketType type)
+{
+    switch (type)
+    {
+        case PKT_NAME:
+            return "PKT_NAME";
+        case PKT_CHAT:
+            return "PKT_CHAT";
+        case PKT_JOIN:
+            return "PKT_JOIN";
+        case PKT_LEAVE:
+            return "PKT_LEAVE";
+        case PKT_ERR:
+            return "PKT_ERR";
+        default:
+            return "PKT_UNKNOWN";
     }
 }
 
@@ -169,7 +228,7 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
 {
     while (1)
     {
-        if ((*clients_count) >= MAX_CLIENTS - 1)
+        if ((*clients_count) >= MAX_CLIENTS)
         {
             fprintf(stderr, "too many clients");
             return -1;
@@ -187,11 +246,16 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
             return -1;
         }
 
-        set_nonblocking(new_client_fd);
+        if (set_nonblocking(new_client_fd) < 0)
+        {
+            close(new_client_fd);
+            return -1;
+        }
 
         Client* new_client = malloc(sizeof(Client));
         if (!new_client)
         {
+            close(new_client_fd);
             return -1;
         }
         memset(new_client, 0, sizeof(Client));
@@ -214,7 +278,7 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
             free(new_client);
             return -1;
         };
-        printf("[CONNECT] Client #%d\n", new_client->id);
+        printf("[CONNECT] Client #%" PRIu32 "\n", new_client->id);
     }
 }
 
@@ -231,42 +295,58 @@ int set_client_name(Client* c, const char* msg, size_t msg_len)
     return 0;
 }
 
-int is_name_taken(Client* clients[], int clients_count, const char* name)
+int is_name_taken(Client* clients[], int clients_count, const char* name, size_t name_len)
 {
     for (int i = 0; i < clients_count; i++)
     {
-        if (clients[i] && clients[i]->state == STATE_READY && strcmp(clients[i]->name, name) == 0)
+        if ((clients[i] && clients[i]->state == STATE_READY) &&
+            (strlen(clients[i]->name) == name_len) &&
+            (memcmp(clients[i]->name, name, name_len) == 0))
+        {
             return 1;
+        }
     }
     return 0;
 }
 
 void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* clients_count,
-                       char msg[], int len)
+                       const uint8_t msg[], uint32_t len, uint32_t* message_id)
 {
 
-    for (int i = 0; i < *clients_count; i++)
+    int i = 0;
+    while (i < *clients_count)
     {
-        if (clients[i]->ei.fd != c->ei.fd)
+        if (clients[i]->ei.fd == c->ei.fd)
         {
-            if (enqueue_packet(clients[i], h, msg, len) < 0)
-            {
-                continue;
-            }
-            if (set_epollout_to_client(epfd, clients[i]) < 0)
-            {
-                perror("set_epollout_to_client");
-                remove_client(epfd, clients[i]->ei.fd, clients, clients_count);
-                continue;
-            }
+            i++;
+            continue;
         }
+
+        if (clients[i]->state != STATE_READY)
+        {
+            i++;
+            continue;
+        }
+        if (enqueue_packet(clients[i], h, msg, len) < 0)
+        {
+            i++;
+            continue;
+        }
+        // без i++ для учета swap-delete
+        if (set_epollout_to_client(epfd, clients[i]) < 0)
+        {
+            perror("set_epollout_to_client");
+            disconnect_client(epfd, clients[i], clients, clients_count, message_id);
+            continue;
+        }
+        i++;
     }
 }
 
-int send_server_user_event(Client* c, uint32_t message_id, PacketType type, const char* name,
-                           uint32_t user_id)
+int send_server_user_event(Client* c, PacketType type, const char* name, uint32_t user_id,
+                           uint32_t* message_id)
 {
-    if (type != PKT_JOIN && type != PKT_LEAVE)
+    if (type != PKT_JOIN && type != PKT_LEAVE && type != PKT_REGISTER_OK)
     {
         return -1;
     }
@@ -277,15 +357,15 @@ int send_server_user_event(Client* c, uint32_t message_id, PacketType type, cons
     Header h;
     memset(&h, 0, sizeof(h));
     h.flags      = 0;
-    h.message_id = message_id;
+    h.message_id = next_message_id(message_id);
     h.room_id    = 0;
     h.sender_id  = SERVER_ID;
     h.timestamp  = (uint64_t)time(NULL);
     h.type       = type;
     h.version    = 1;
 
-    size_t name_len = strlen(name);
-    char   msg[PAYLOAD_ID_AND_NAME_SIZE];
+    size_t  name_len = strlen(name);
+    uint8_t msg[PAYLOAD_ID_AND_NAME_SIZE];
 
     uint32_t msg_len = SENDER_ID_SIZE + name_len;
     if (msg_len > PAYLOAD_ID_AND_NAME_SIZE)
@@ -302,29 +382,45 @@ int send_server_user_event(Client* c, uint32_t message_id, PacketType type, cons
     return enqueue_packet(c, &h, msg, msg_len);
 }
 
-void broadcast_user_event(int epfd, Client* skip, Client* clients[], int clients_count,
-                          PacketType type, uint32_t message_id)
+void broadcast_user_event(int epfd, Client* skip, Client* clients[], int* clients_count,
+                          PacketType type, uint32_t* message_id)
 {
-    if (!skip)
+    if (!skip || !clients || !clients_count || !message_id)
     {
         return;
     }
-    for (int i = 0; i < clients_count; i++)
+    int i = 0;
+    while (i < *clients_count)
     {
         if (!clients[i] || skip == clients[i])
         {
+            i++;
             continue;
         }
-        if (send_server_user_event(clients[i], message_id, type, skip->name, skip->id) < 0)
+        if (clients[i]->state != STATE_READY)
         {
+            i++;
             continue;
         }
-        set_epollout_to_client(epfd, clients[i]);
+        if (send_server_user_event(clients[i], type, skip->name, skip->id, message_id) < 0)
+        {
+            i++;
+            continue;
+        }
+        // если сервер не смог включить epollout, значит, не может надежно обслуживать соединение
+        // поэтому его закрываем
+        if (set_epollout_to_client(epfd, clients[i]) < 0)
+        {
+            perror("set_epollout_to_client");
+            disconnect_client(epfd, clients[i], clients, clients_count, message_id);
+            continue;
+        }
+        i++;
     }
 }
 
 int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count,
-                      uint32_t message_id)
+                      uint32_t* message_id)
 {
     if (!c || !clients)
     {
@@ -332,7 +428,7 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
     }
     if (c->state == STATE_READY && c->name[0] != '\0')
     {
-        broadcast_user_event(epfd, c, clients, *clients_count, PKT_LEAVE, message_id);
+        broadcast_user_event(epfd, c, clients, clients_count, PKT_LEAVE, message_id);
     }
     remove_client(epfd, c->ei.fd, clients, clients_count);
     return 0;
@@ -351,7 +447,7 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
 // [8 timestamp]
 // [4 msg_id]
 // [payload]
-int enqueue_packet(Client* c, Header* header, const char* msg, uint32_t len)
+int enqueue_packet(Client* c, Header* header, const uint8_t* msg, uint32_t len)
 {
     // если пакет не влезает, делается смещение неотправленного в начало
     // -4 как проверка от переполнения
@@ -388,6 +484,8 @@ int enqueue_packet(Client* c, Header* header, const char* msg, uint32_t len)
     c->conn.out_len += TYPE_SIZE;
 
     // [2 flags]
+    // -1 не влезло
+    // [4 frame_len]
     uint16_t flags = htons(header->flags);
     memcpy(c->conn.out_buf + c->conn.out_len, &flags, FLAGS_SIZE);
     c->conn.out_len += FLAGS_SIZE;
@@ -457,7 +555,7 @@ int recv_into_inbuf(Client* c)
 }
 
 // pop пакета из in_buf в dst и dst_len
-// dst должен быть размером хотя бы PAYLOAD_SIZE + 1
+// dst должен быть размером PAYLOAD_SIZE
 // 1 при успешном извлечении
 // 0 в буфере нет полного ответа
 // -2 ошибка протокола
@@ -471,7 +569,7 @@ int recv_into_inbuf(Client* c)
 // [8 timestamp]
 // [4 msg_id]
 // [payload]
-int try_pop_packet(Client* c, Header* header, char* dst, uint32_t* dst_len)
+int try_pop_packet(Client* c, Header* header, uint8_t* dst, uint32_t* dst_len)
 {
     size_t off = 0;
     // [4 frame_len]
@@ -513,6 +611,8 @@ int try_pop_packet(Client* c, Header* header, char* dst, uint32_t* dst_len)
     memcpy(&header->message_id, c->conn.in_buf + off, MESSAGE_ID_SIZE);
     off += MESSAGE_ID_SIZE;
     // [payload]
+    // -1 не влезло
+    // [4 frame_len]
     size_t payload_len = len - HEADER_SIZE;
     if (payload_len > PAYLOAD_SIZE)
     {
@@ -577,47 +677,19 @@ int flush_send(Client* c)
     return 0;
 }
 
-void send_server_error(int epfd, Client* c, const char msg[], uint32_t message_id)
+int send_server_error(int epfd, Client* c, const char msg[], uint32_t* message_id)
 {
     Header h;
     memset(&h, 0, sizeof(h));
     h.version    = 1;
     h.flags      = 0;
-    h.message_id = message_id;
+    h.message_id = next_message_id(message_id);
     h.type       = PKT_ERR;
     h.room_id    = 0;
     h.sender_id  = 0;
     h.timestamp  = (uint64_t)time(NULL);
 
-    enqueue_packet(c, &h, msg, (uint32_t)strlen(msg));
-    set_epollout_to_client(epfd, c);
-}
-
-// [ID 4][NAME 32]
-int send_server_join(int epfd, Client* c, const char* name, uint32_t message_id)
-{
-    Header h;
-    memset(&h, 0, sizeof(h));
-    h.version    = 1;
-    h.flags      = 0;
-    h.message_id = message_id;
-    h.type       = PKT_JOIN;
-    h.room_id    = 0;
-    h.sender_id  = SERVER_ID;
-    h.timestamp  = (uint64_t)time(NULL);
-
-    char msg[PAYLOAD_ID_AND_NAME_SIZE];
-    memset(msg, 0, PAYLOAD_ID_AND_NAME_SIZE);
-
-    size_t   off        = 0;
-    uint32_t id_to_send = htonl(c->id);
-    memcpy(msg + off, &id_to_send, sizeof(id_to_send));
-    off += sizeof(id_to_send);
-
-    size_t name_len = my_strnlen(name, MAX_NAME_LEN);
-    memcpy(msg + off, name, name_len);
-
-    if (enqueue_packet(c, &h, msg, PAYLOAD_ID_AND_NAME_SIZE) < 0)
+    if (enqueue_packet(c, &h, (const uint8_t*)msg, (uint32_t)strlen(msg)) < 0)
     {
         return -1;
     }
@@ -625,7 +697,6 @@ int send_server_join(int epfd, Client* c, const char* name, uint32_t message_id)
     {
         return -1;
     }
-
     return 0;
 }
 
@@ -656,29 +727,12 @@ int unset_epollout_to_client(int epfd, Client* c)
     return 0;
 }
 
-// 0 успех
-// -1 не влезло
-int send_client_name(Client* c, const char name[])
+int parse_client_id_and_name(const uint8_t* msg, uint32_t msg_len, uint32_t* id, char name[])
 {
-    Header h;
-    memset(&h, 0, sizeof(h));
-    h.version    = 1;
-    h.flags      = 0;
-    h.message_id = 0;
-    h.type       = PKT_NAME;
-    h.room_id    = 0;
-    h.sender_id  = SERVER_ID;
-    h.timestamp  = (uint64_t)time(NULL);
-
-    if (enqueue_packet(c, &h, name, strlen(name)) < 0)
+    if (!msg || !id || !name)
     {
         return -1;
-    };
-    return 0;
-}
-
-int parse_client_id_and_name(char msg[], uint32_t msg_len, uint32_t* id, char name[])
-{
+    }
     if (msg_len < SENDER_ID_SIZE)
     {
         return -1;
@@ -691,17 +745,29 @@ int parse_client_id_and_name(char msg[], uint32_t msg_len, uint32_t* id, char na
     size_t name_len = msg_len - off;
     if (name_len > MAX_NAME_LEN)
     {
-        name_len = MAX_NAME_LEN;
+        return -1;
     }
     memcpy(name, msg + off, name_len);
     name[name_len] = '\0';
     return 0;
 }
 
-// send_server_info(...)
-
-// send_server_leave(...)
-
-// create_server_socket
-// accept_client
-// connect_to_server
+int send_server_ready_users(Client* c, Client* clients[], int clients_count, uint32_t* message_id)
+{
+    if (!c || !clients)
+    {
+        return -1;
+    }
+    for (int i = 0; i < clients_count; i++)
+    {
+        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i])
+        {
+            if (send_server_user_event(c, PKT_JOIN, clients[i]->name, clients[i]->id, message_id) <
+                0)
+            {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
