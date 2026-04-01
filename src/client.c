@@ -144,6 +144,7 @@ int main()
 
     char out[OUT_CAP];
     memset(out, 0, sizeof(out));
+    int need_epollout;
     while (1)
     {
         int nfds = epoll_wait(epfd, events, 2, -1);
@@ -154,6 +155,7 @@ int main()
         }
         for (int i = 0; i < nfds; i++)
         {
+            need_epollout      = 0;
             uint32_t   cur_evs = events[i].events;
             EpollItem* ei      = (EpollItem*)events[i].data.ptr;
 
@@ -200,6 +202,10 @@ int main()
 
                         switch (c->state)
                         {
+                            case STATE_WAIT_REGISTER_OK:
+                            {
+                                break;
+                            }
                             case STATE_WAIT_NAME:
                             {
                                 if (bytes == 0)
@@ -224,6 +230,12 @@ int main()
                                     continue;
                                 }
                                 h.type = PKT_NAME;
+                                if (enqueue_packet(c, &h, (const uint8_t*)out_buf, bytes) < 0)
+                                {
+                                    continue;
+                                }
+                                need_epollout = 1;
+                                c->state      = STATE_WAIT_REGISTER_OK;
                                 break;
                             }
 
@@ -249,17 +261,55 @@ int main()
                                     }
                                     continue;
                                 }
-                                h.type = PKT_CHAT;
+                                if (strncmp("/join ", out_buf, 6) == 0)
+                                {
+                                    errno = 0;
+                                    char*         end;
+                                    unsigned long room = strtoul(out_buf + 6, &end, 0);
+                                    if (*end != '\0')
+                                    {
+                                        printf("[ERROR] INVALID ROOM ID\n");
+                                        continue;
+                                    }
+                                    if (end == out_buf + 6)
+                                    {
+                                        printf("[ERROR] ROOM ID IS NOT A NUMBER\n");
+                                        continue;
+                                    }
+                                    if (errno == ERANGE)
+                                    {
+                                        printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
+                                        continue;
+                                    }
+                                    h.type    = PKT_ROOM_CHANGE;
+                                    h.room_id = (uint32_t)room;
+
+                                    if (enqueue_packet(c, &h, NULL, 0) < 0)
+                                    {
+                                        continue;
+                                    }
+                                    need_epollout = 1;
+                                }
+                                else
+                                {
+                                    h.type    = PKT_CHAT;
+                                    h.room_id = c->room_id;
+                                    if (enqueue_packet(c, &h, (const uint8_t*)out_buf, bytes) < 0)
+                                    {
+
+                                        continue;
+                                    }
+                                    need_epollout = 1;
+                                }
                                 break;
                             }
                         }
-                        if (enqueue_packet(c, &h, (const uint8_t*)out_buf, bytes) < 0)
+                        if (need_epollout)
                         {
-                            continue;
-                        }
-                        if (set_epollout_to_client(epfd, c) < 0)
-                        {
-                            goto cleanup;
+                            if (set_epollout_to_client(epfd, c) < 0)
+                            {
+                                goto cleanup;
+                            }
                         }
                     }
                 }
@@ -324,20 +374,24 @@ int main()
                         }
                         case PKT_REGISTER_OK:
                         {
-                            if (c->state != STATE_READY)
+                            if (c->state == STATE_WAIT_REGISTER_OK)
                             {
                                 char     my_name[MAX_NAME_LEN + 1];
-                                uint32_t my_id = 0;
-                                if (parse_client_id_and_name(msg, msg_len, &my_id, my_name) < 0)
+                                uint32_t my_id         = 0;
+                                uint32_t start_room_id = 0;
+                                if (parse_client_register_ok(msg, msg_len, &my_id, &start_room_id,
+                                                             my_name) < 0)
                                 {
                                     continue;
                                 }
                                 c->state           = STATE_READY;
                                 c->id              = my_id;
+                                c->room_id         = start_room_id;
                                 size_t my_name_len = strlen(my_name);
                                 memcpy(c->name, my_name, my_name_len);
                                 c->name[my_name_len] = '\0';
-                                printf("[REGISTER] as %s#%" PRIu32 "\n", c->name, c->id);
+                                printf("[REGISTER] as %s#%" PRIu32 " in room%" PRIu32 "\n", c->name,
+                                       c->id, c->room_id);
                             }
                             break;
                         }
@@ -361,7 +415,8 @@ int main()
                             memset(out, 0, sizeof(out));
                             if (payload_to_str(msg, msg_len, out, OUT_CAP) == 0)
                             {
-                                printf("#%" PRIu32 ": %s\n", h.sender_id, out);
+                                printf("[room=%" PRIu32 "] #%" PRIu32 ": %s\n", h.room_id,
+                                       h.sender_id, out);
                             }
                             break;
                         }
@@ -374,6 +429,16 @@ int main()
                             }
                             break;
                         }
+                        case PKT_ROOM_CHANGE_OK:
+                        {
+                            uint32_t prev_room = c->room_id;
+                            c->room_id         = h.room_id;
+                            printf("[ROOM CHANGE] You've changed your room from %" PRIu32
+                                   " to %" PRIu32 "\n",
+                                   prev_room, c->room_id);
+                            break;
+                        }
+
                         default:
                         {
                             const char* p_t = packet_type_str(h.type);

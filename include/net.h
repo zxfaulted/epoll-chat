@@ -10,6 +10,7 @@
 #define SERVER_ADDRESS "127.0.0.1"
 #define MAX_EVENTS 512
 #define MAX_CLIENTS 1024
+#define MAX_ROOMS 128
 
 #define MAX_NAME_LEN 32
 #define BUF_SIZE 8192
@@ -32,6 +33,7 @@
 #define MAX_PAYLOAD_SIZE 1024
 #define PAYLOAD_SIZE MAX_PAYLOAD_SIZE
 #define PAYLOAD_ID_AND_NAME_SIZE (SENDER_ID_SIZE + MAX_NAME_LEN)
+#define PAYLOAD_REGISTER_OK_SIZE (SENDER_ID_SIZE + ROOM_ID_SIZE + MAX_NAME_LEN)
 
 // [4 frame_len]
 // [1 version]
@@ -58,6 +60,7 @@ typedef struct EpollItem
 typedef enum
 {
     STATE_WAIT_NAME,
+    STATE_WAIT_REGISTER_OK,
     STATE_READY
 } ClientState;
 
@@ -78,6 +81,7 @@ typedef struct Client
     uint32_t  id;
     char      name[MAX_NAME_LEN + 1];
 
+    uint32_t           room_id;
     Connection         conn;
     ClientState        state;
     struct sockaddr_in sa;
@@ -97,7 +101,9 @@ typedef enum
     PKT_JOIN,
     PKT_LEAVE,
     PKT_NAME,
-    PKT_ERR
+    PKT_ERR,
+    PKT_ROOM_CHANGE,
+    PKT_ROOM_CHANGE_OK
 } PacketType;
 
 // [4 frame_len]
@@ -163,10 +169,14 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
 void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* clients_count,
                        const uint8_t msg[], uint32_t len, uint32_t* message_id);
 
-int  send_server_error(int epfd, Client* c, const char msg[], uint32_t* message_id);
-int  set_epollout_to_client(int epfd, Client* c);
-int  unset_epollout_to_client(int epfd, Client* c);
-int  parse_client_id_and_name(const uint8_t* msg, uint32_t msg_len, uint32_t* id, char name[]);
+int send_server_error(int epfd, Client* c, const char msg[], uint32_t* message_id);
+int set_epollout_to_client(int epfd, Client* c);
+int unset_epollout_to_client(int epfd, Client* c);
+int parse_client_id_and_name(const uint8_t* msg, uint32_t msg_len, uint32_t* client_id,
+                             char name[]);
+int parse_client_register_ok(const uint8_t* msg, uint32_t msg_len, uint32_t* client_id,
+                             uint32_t* room_id, char name[]);
+
 void reject_packet(int epfd, Client* c, int cur_fd, Client* clients[], int* clients_count,
                    const char* reason, uint32_t* message_id);
 
@@ -180,9 +190,10 @@ PacketState validate_packet_chat(uint32_t msg_len, Header* h);
 int         is_name_taken(Client* clients[], int clients_count, const char* name, size_t name_len);
 int         disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count,
                               uint32_t* message_id);
-void        broadcast_user_event(int epfd, Client* skip, Client* clients[], int* clients_count,
-                                 PacketType type, uint32_t* message_id);
-int send_server_ready_users(Client* c, Client* clients[], int clients_count, uint32_t* message_id);
+void        broadcast_user_event(int epfd, Client* skip, uint32_t room_id, Client* clients[],
+                                 int* clients_count, PacketType type, uint32_t* message_id);
+int send_server_ready_users(Client* c, uint32_t room_id, Client* clients[], int clients_count,
+                            uint32_t* message_id);
 const char* packet_type_str(PacketType type);
 
 int payload_to_str(const uint8_t payload[], size_t len, char out[], size_t out_cap);
@@ -190,9 +201,12 @@ int payload_to_str(const uint8_t payload[], size_t len, char out[], size_t out_c
 // только для register_ok|join|leave пакетов
 // 0 успех
 // -1 ошибка
-int send_server_user_event(Client* c, PacketType type, const char* name, uint32_t user_id,
-                           uint32_t* message_id);
+int send_server_user_event(Client* c, uint32_t room_id, PacketType type, const char* name,
+                           uint32_t user_id, uint32_t* message_id);
 
 uint32_t next_message_id(uint32_t* message_id);
 
+PacketState validate_packet_room_change(uint32_t msg_len, Header* h);
+int         send_server_register_ok(Client* c, uint32_t room_id, const char* name, uint32_t user_id,
+                                    uint32_t* message_id);
 #endif

@@ -15,8 +15,12 @@
 
 int main()
 {
+    int     ret       = -1;
+    int     server_fd = -1;
+    int     epfd      = -1;
+    Server* server    = NULL;
     signal(SIGPIPE, SIG_IGN);
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
     {
         perror("socket");
@@ -34,34 +38,32 @@ int main()
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
     {
         perror("setsockopt");
-        close(server_fd);
+        goto cleanup;
         return 1;
     }
 
     if (bind(server_fd, (struct sockaddr*)&server_sa, server_len) < 0)
     {
-        close(server_fd);
         perror("bind");
-        return -1;
+        goto cleanup;
     }
 
     if (listen(server_fd, SOMAXCONN) < 0)
     {
-        close(server_fd);
         perror("listen");
-        return -1;
+        goto cleanup;
     }
 
     if (set_nonblocking(server_fd) < 0)
     {
-        close(server_fd);
-        return -1;
+        perror("fcntl");
+        goto cleanup;
     }
-    Server* server = malloc(sizeof(Server));
+    server = malloc(sizeof(Server));
     if (server == NULL)
     {
         perror("server malloc");
-        return -1;
+        goto cleanup;
     }
     server->sa = server_sa;
 
@@ -73,21 +75,16 @@ int main()
     ev.events   = EPOLLIN;
     ev.data.ptr = server;
 
-    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd < 0)
     {
         perror("epoll_create1");
-        close(server_fd);
-        free(server);
-        return -1;
+        goto cleanup;
     }
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, server->ei.fd, &ev) < 0)
     {
         perror("epoll ADD server");
-        close(server_fd);
-        close(epfd);
-        free(server);
-        return -1;
+        goto cleanup;
     };
 
     struct epoll_event events[MAX_EVENTS];
@@ -104,7 +101,7 @@ int main()
         if (nfds < 0)
         {
             perror("epoll_wait");
-            break;
+            goto cleanup;
         }
         for (int i = 0; i < nfds; i++)
         {
@@ -132,6 +129,7 @@ int main()
                         uint8_t  msg[PAYLOAD_SIZE];
                         uint32_t msg_len;
                         int      rc;
+                        case STATE_WAIT_REGISTER_OK:
                         case STATE_WAIT_NAME:
                             rc = recv_into_inbuf(c);
                             if (rc == 0)
@@ -147,7 +145,7 @@ int main()
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
                             Header h = {0};
                             rc       = try_pop_packet(c, &h, msg, &msg_len);
@@ -160,7 +158,7 @@ int main()
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
                                               "POP_PACKET_ERROR", &message_id);
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
 
                             PacketState p_st = validate_packet_name(msg_len, &h);
@@ -174,7 +172,7 @@ int main()
                                               &message_id);
 
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
 
                             if (h.type != PKT_NAME)
@@ -182,7 +180,7 @@ int main()
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
                                               "EXPECTED TYPE: PKT_NAME, RECEIVED", &message_id);
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
 
                             char out[MAX_NAME_LEN + 1];
@@ -199,7 +197,7 @@ int main()
                                     }
                                     client_removed = 1;
                                 }
-                                continue;
+                                break;
                             }
                             size_t out_len = strlen(out);
 
@@ -210,7 +208,7 @@ int main()
                                 {
                                     fprintf(stderr, "SEND_SERVER_ERROR FAILED\n");
                                 }
-                                continue;
+                                break;
                             }
 
                             if (set_client_name(c, out, out_len) < 0)
@@ -220,11 +218,11 @@ int main()
                                 {
                                     fprintf(stderr, "SEND_SERVER_ERROR FAILED\n");
                                 }
-                                continue;
+                                break;
                             }
-
-                            if (send_server_user_event(c, PKT_REGISTER_OK, c->name, c->id,
-                                                       &message_id) < 0)
+                            c->room_id = 1;
+                            if (send_server_register_ok(c, c->room_id, c->name, c->id,
+                                                        &message_id) < 0)
                             {
                                 fprintf(stderr, "COULDN'T SEND JOIN FOR CLIENT %s#%" PRIu32 "",
                                         c->name, c->id);
@@ -234,21 +232,21 @@ int main()
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
-
+                            c->state = STATE_READY;
                             if (set_epollout_to_client(epfd, c) < 0)
                             {
                                 perror("set_epollout_to_client");
                                 disconnect_client(epfd, c, clients, &clients_count, &message_id);
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
-                            c->state = STATE_READY;
-                            broadcast_user_event(epfd, c, clients, &clients_count, PKT_JOIN,
-                                                 &message_id);
+                            broadcast_user_event(epfd, c, c->room_id, clients, &clients_count,
+                                                 PKT_JOIN, &message_id);
                             printf("[REGISTER] %s#%" PRIu32 "\n", c->name, c->id);
-                            if (send_server_ready_users(c, clients, clients_count, &message_id) < 0)
+                            if (send_server_ready_users(c, c->room_id, clients, clients_count,
+                                                        &message_id) < 0)
                             {
                                 fprintf(stderr, "COULDN'T SEND READY USERS TO CHOSEN CLIENT");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
@@ -257,14 +255,14 @@ int main()
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
                             if (set_epollout_to_client(epfd, c) < 0)
                             {
                                 perror("set_epollout_to_client");
                                 disconnect_client(epfd, c, clients, &clients_count, &message_id);
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
                             break;
                         case STATE_READY:
@@ -281,7 +279,7 @@ int main()
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
                                 client_removed = 1;
-                                continue;
+                                break;
                             }
                             while (1)
                             {
@@ -301,43 +299,149 @@ int main()
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
                                     client_removed = 1;
-                                    continue;
+                                    break;
                                 }
-                                PacketState p_st = validate_packet_chat(msg_len, &h);
-                                if (p_st == PKT_OK)
+                                switch (h.type)
                                 {
-                                    Header out;
-                                    memset(&out, 0, sizeof(out));
-                                    out.version    = h.version;
-                                    out.type       = h.type;
-                                    out.flags      = h.flags;
-                                    out.sender_id  = c->id;
-                                    out.room_id    = 0;
-                                    out.timestamp  = (uint64_t)time(NULL);
-                                    out.message_id = next_message_id(&message_id);
+                                    case PKT_CHAT:
+                                    {
+                                        PacketState p_st = validate_packet_chat(msg_len, &h);
+                                        if (p_st == PKT_OK)
+                                        {
+                                            if (h.room_id != c->room_id)
+                                            {
+                                                send_server_error(epfd, c,
+                                                                  "YOU ARE NOT IN THIS ROOM\n",
+                                                                  &message_id);
+                                                break;
+                                            }
+                                            Header out;
+                                            memset(&out, 0, sizeof(out));
+                                            out.version    = h.version;
+                                            out.type       = h.type;
+                                            out.flags      = h.flags;
+                                            out.sender_id  = c->id;
+                                            out.room_id    = c->room_id;
+                                            out.timestamp  = (uint64_t)time(NULL);
+                                            out.message_id = next_message_id(&message_id);
 
-                                    printf("%s#%" PRIu32 ": %.*s\n", c->name, c->id, (int)msg_len,
-                                           msg);
-                                    broadcast_message(epfd, c, &out, clients, &clients_count, msg,
-                                                      msg_len, &message_id);
+                                            printf("[room=%" PRIu32 "] %s#%" PRIu32 ": %.*s\n",
+                                                   c->room_id, c->name, c->id, (int)msg_len, msg);
+                                            broadcast_message(epfd, c, &out, clients,
+                                                              &clients_count, msg, msg_len,
+                                                              &message_id);
+                                        }
+                                        else
+                                        {
+                                            const char* p_st_str = packet_state_str(p_st);
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count, p_st_str, &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        break;
+                                    }
+                                    case PKT_ROOM_CHANGE:
+                                    {
+                                        PacketState p_st = validate_packet_room_change(msg_len, &h);
+
+                                        if (p_st != PKT_OK)
+                                        {
+                                            send_server_error(epfd, c, packet_state_str(p_st),
+                                                              &message_id);
+                                            break;
+                                        }
+                                        if (h.room_id == c->room_id)
+                                        {
+                                            if (send_server_user_event(c, c->room_id,
+                                                                       PKT_ROOM_CHANGE_OK, c->name,
+                                                                       c->id, &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            if (set_epollout_to_client(epfd, c) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            break;
+                                        }
+                                        // рассылка PKT_LEAVE в прошлую комнату
+                                        broadcast_user_event(epfd, c, c->room_id, clients,
+                                                             &clients_count, PKT_LEAVE,
+                                                             &message_id);
+                                        // смена комнаты для клиента
+                                        uint32_t prev_room_id = c->room_id;
+                                        c->room_id            = h.room_id;
+                                        printf("Client %s#%" PRIu32 " changed room from %" PRIu32
+                                               "to %" PRIu32 "\n",
+                                               c->name, c->id, prev_room_id, c->room_id);
+                                        // рассылка PKT_JOIN в новую комнату
+                                        broadcast_user_event(epfd, c, c->room_id, clients,
+                                                             &clients_count, PKT_JOIN, &message_id);
+                                        // подтверждение смены комнаты клиенту
+                                        if (send_server_user_event(c, c->room_id,
+                                                                   PKT_ROOM_CHANGE_OK, c->name,
+                                                                   c->id, &message_id) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        if (set_epollout_to_client(epfd, c) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        // список готовых пользователей для вошедшего
+                                        if (send_server_ready_users(c, c->room_id, clients,
+                                                                    clients_count, &message_id) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        if (set_epollout_to_client(epfd, c) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        break;
+                                    }
+
+                                    default:
+                                    {
+                                        char reply[256];
+                                        snprintf(reply, 256, "UNSUPPORTED PACKET TYPE: %s",
+                                                 packet_type_str(h.type));
+                                        reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
+                                                      (const char*)reply, &message_id);
+                                        client_removed = 1;
+                                        break;
+                                    }
                                 }
-                                else
+                                if (client_removed)
                                 {
-                                    const char* p_st_str = packet_state_str(p_st);
-                                    reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                                  p_st_str, &message_id);
-                                    client_removed = 1;
                                     break;
                                 }
                             }
-                            break;
-                    }
-                    if (client_removed)
-                    {
-                        break;
                     }
                 }
-
+                if (client_removed)
+                {
+                    break;
+                }
                 if (cur_evs & EPOLLOUT)
                 {
                     int rc = flush_send(c);
@@ -382,16 +486,29 @@ int main()
             }
         }
     }
-
+    ret = 0;
+cleanup:
     for (int i = 0; i < clients_count; i++)
     {
-        close(clients[i]->ei.fd);
-        free(clients[i]);
+        if (clients[i])
+        {
+            close(clients[i]->ei.fd);
+            free(clients[i]);
+        }
     }
 
-    close(server_fd);
-    close(epfd);
-    free(server);
+    if (server_fd >= 0)
+    {
+        close(server_fd);
+    }
+    if (epfd >= 0)
+    {
+        close(epfd);
+    }
+    if (server)
+    {
+        free(server);
+    }
 
-    return 0;
+    return ret;
 }

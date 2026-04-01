@@ -49,12 +49,10 @@ int set_nonblocking(int server_fd)
     int flags = fcntl(server_fd, F_GETFL, 0);
     if (flags < 0)
     {
-        perror("fcntl");
         return -1;
     }
     if (fcntl(server_fd, F_SETFL, flags | O_NONBLOCK) < 0)
     {
-        perror("fcntl");
         return -1;
     }
     return 0;
@@ -154,7 +152,7 @@ PacketState validate_packet_chat(uint32_t msg_len, Header* h)
     {
         return PKT_BAD_FLAGS;
     }
-    if (h->room_id != 0)
+    if (h->room_id == 0 || h->room_id > MAX_ROOMS)
     {
         return PKT_BAD_ROOM_ID;
     }
@@ -171,6 +169,44 @@ PacketState validate_packet_chat(uint32_t msg_len, Header* h)
         return PKT_BAD_MESSAGE_ID;
     }
     if (msg_len == 0 || msg_len > PAYLOAD_SIZE)
+    {
+        return PKT_BAD_PAYLOAD_SIZE;
+    }
+    return PKT_OK;
+}
+
+PacketState validate_packet_room_change(uint32_t msg_len, Header* h)
+{
+    if (h->version != 1)
+    {
+        return PKT_BAD_VERSION;
+    }
+    if (h->type != PKT_ROOM_CHANGE)
+    {
+        return PKT_BAD_TYPE;
+    }
+    if (h->flags != 0)
+    {
+        return PKT_BAD_FLAGS;
+    }
+    if (h->room_id == 0 || h->room_id > MAX_ROOMS)
+    {
+        return PKT_BAD_ROOM_ID;
+    }
+    if (h->timestamp != 0)
+    {
+        return PKT_BAD_TIMESTAMP;
+    }
+    if (h->sender_id != 0)
+    {
+        return PKT_BAD_SENDER_ID;
+    }
+    if (h->message_id != 0)
+    {
+        return PKT_BAD_MESSAGE_ID;
+    }
+    if ((msg_len == 0 && h->type != PKT_ROOM_CHANGE) ||
+        (h->type == PKT_ROOM_CHANGE && msg_len != 0) || msg_len > PAYLOAD_SIZE)
     {
         return PKT_BAD_PAYLOAD_SIZE;
     }
@@ -218,6 +254,12 @@ const char* packet_type_str(PacketType type)
             return "PKT_LEAVE";
         case PKT_ERR:
             return "PKT_ERR";
+        case PKT_REGISTER_OK:
+            return "PKT_REGISTER_OK";
+        case PKT_ROOM_CHANGE:
+            return "PKT_ROOM_CHANGE";
+        case PKT_ROOM_CHANGE_OK:
+            return "PKT_ROOM_CHANGE_OK";
         default:
             return "PKT_UNKNOWN";
     }
@@ -259,13 +301,12 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
             return -1;
         }
         memset(new_client, 0, sizeof(Client));
-        new_client->id              = (*client_id)++;
-        new_client->sa              = new_client_sa;
-        new_client->ei.item         = CLIENT_ITEM;
-        new_client->ei.fd           = new_client_fd;
-        new_client->state           = STATE_WAIT_NAME;
-        new_client->name[0]         = '\0';
-        clients[(*clients_count)++] = new_client;
+        new_client->id      = (*client_id)++;
+        new_client->sa      = new_client_sa;
+        new_client->ei.item = CLIENT_ITEM;
+        new_client->ei.fd   = new_client_fd;
+        new_client->state   = STATE_WAIT_NAME;
+        new_client->name[0] = '\0';
 
         struct epoll_event ev;
         ev.events   = EPOLLIN | EPOLLHUP | EPOLLRDHUP;
@@ -278,6 +319,8 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
             free(new_client);
             return -1;
         };
+        clients[(*clients_count)++] = new_client;
+
         printf("[CONNECT] Client #%" PRIu32 "\n", new_client->id);
     }
 }
@@ -327,6 +370,11 @@ void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* c
             i++;
             continue;
         }
+        if (clients[i]->room_id != h->room_id)
+        {
+            i++;
+            continue;
+        }
         if (enqueue_packet(clients[i], h, msg, len) < 0)
         {
             i++;
@@ -343,10 +391,11 @@ void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* c
     }
 }
 
-int send_server_user_event(Client* c, PacketType type, const char* name, uint32_t user_id,
-                           uint32_t* message_id)
+int send_server_user_event(Client* c, uint32_t room_id, PacketType type, const char* name,
+                           uint32_t user_id, uint32_t* message_id)
 {
-    if (type != PKT_JOIN && type != PKT_LEAVE && type != PKT_REGISTER_OK)
+    if (type != PKT_JOIN && type != PKT_LEAVE && type != PKT_REGISTER_OK &&
+        type != PKT_ROOM_CHANGE_OK)
     {
         return -1;
     }
@@ -358,7 +407,7 @@ int send_server_user_event(Client* c, PacketType type, const char* name, uint32_
     memset(&h, 0, sizeof(h));
     h.flags      = 0;
     h.message_id = next_message_id(message_id);
-    h.room_id    = 0;
+    h.room_id    = room_id;
     h.sender_id  = SERVER_ID;
     h.timestamp  = (uint64_t)time(NULL);
     h.type       = type;
@@ -382,8 +431,47 @@ int send_server_user_event(Client* c, PacketType type, const char* name, uint32_
     return enqueue_packet(c, &h, msg, msg_len);
 }
 
-void broadcast_user_event(int epfd, Client* skip, Client* clients[], int* clients_count,
-                          PacketType type, uint32_t* message_id)
+int send_server_register_ok(Client* c, uint32_t room_id, const char* name, uint32_t user_id,
+                            uint32_t* message_id)
+{
+
+    if (!c || !name || !message_id)
+    {
+        return -1;
+    }
+    Header h;
+    memset(&h, 0, sizeof(h));
+    h.flags      = 0;
+    h.message_id = next_message_id(message_id);
+    h.room_id    = room_id;
+    h.sender_id  = SERVER_ID;
+    h.timestamp  = (uint64_t)time(NULL);
+    h.type       = PKT_REGISTER_OK;
+    h.version    = 1;
+
+    size_t  name_len = strlen(name);
+    uint8_t msg[PAYLOAD_REGISTER_OK_SIZE];
+
+    uint32_t msg_len = SENDER_ID_SIZE + ROOM_ID_SIZE + name_len;
+    if (msg_len > PAYLOAD_REGISTER_OK_SIZE)
+    {
+        return -1;
+    }
+
+    uint32_t net_user_id = htonl(user_id);
+    uint32_t net_room_id = htonl(room_id);
+    size_t   off         = 0;
+    memcpy(msg + off, &net_user_id, SENDER_ID_SIZE);
+    off += SENDER_ID_SIZE;
+    memcpy(msg + off, &net_room_id, ROOM_ID_SIZE);
+    off += ROOM_ID_SIZE;
+    memcpy(msg + off, name, name_len);
+
+    return enqueue_packet(c, &h, msg, msg_len);
+}
+
+void broadcast_user_event(int epfd, Client* skip, uint32_t room_id, Client* clients[],
+                          int* clients_count, PacketType type, uint32_t* message_id)
 {
     if (!skip || !clients || !clients_count || !message_id)
     {
@@ -402,7 +490,12 @@ void broadcast_user_event(int epfd, Client* skip, Client* clients[], int* client
             i++;
             continue;
         }
-        if (send_server_user_event(clients[i], type, skip->name, skip->id, message_id) < 0)
+        if (clients[i]->room_id != skip->room_id)
+        {
+            i++;
+            continue;
+        }
+        if (send_server_user_event(clients[i], room_id, type, skip->name, skip->id, message_id) < 0)
         {
             i++;
             continue;
@@ -428,7 +521,7 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
     }
     if (c->state == STATE_READY && c->name[0] != '\0')
     {
-        broadcast_user_event(epfd, c, clients, clients_count, PKT_LEAVE, message_id);
+        broadcast_user_event(epfd, c, c->room_id, clients, clients_count, PKT_LEAVE, message_id);
     }
     remove_client(epfd, c->ei.fd, clients, clients_count);
     return 0;
@@ -709,6 +802,7 @@ int set_epollout_to_client(int epfd, Client* c)
     ev.events   = EPOLLIN | EPOLLOUT | EPOLLHUP | EPOLLRDHUP | EPOLLERR;
     if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->ei.fd, &ev) < 0)
     {
+        perror("epoll_ctl mod epollout");
         return -1;
     }
     return 0;
@@ -727,9 +821,39 @@ int unset_epollout_to_client(int epfd, Client* c)
     return 0;
 }
 
-int parse_client_id_and_name(const uint8_t* msg, uint32_t msg_len, uint32_t* id, char name[])
+int parse_client_register_ok(const uint8_t* msg, uint32_t msg_len, uint32_t* client_id,
+                             uint32_t* room_id, char name[])
 {
-    if (!msg || !id || !name)
+    if (!msg || !client_id || !name || !room_id)
+    {
+        return -1;
+    }
+    if (msg_len < SENDER_ID_SIZE + ROOM_ID_SIZE)
+    {
+        return -1;
+    }
+    size_t off = 0;
+    memcpy(client_id, msg + off, SENDER_ID_SIZE);
+    *(client_id) = ntohl(*client_id);
+    off += SENDER_ID_SIZE;
+
+    memcpy(room_id, msg + off, ROOM_ID_SIZE);
+    *(room_id) = ntohl(*room_id);
+    off += ROOM_ID_SIZE;
+
+    size_t name_len = msg_len - off;
+    if (name_len > MAX_NAME_LEN)
+    {
+        return -1;
+    }
+    memcpy(name, msg + off, name_len);
+    name[name_len] = '\0';
+    return 0;
+}
+
+int parse_client_id_and_name(const uint8_t* msg, uint32_t msg_len, uint32_t* client_id, char name[])
+{
+    if (!msg || !client_id || !name)
     {
         return -1;
     }
@@ -738,8 +862,8 @@ int parse_client_id_and_name(const uint8_t* msg, uint32_t msg_len, uint32_t* id,
         return -1;
     }
     size_t off = 0;
-    memcpy(id, msg + off, SENDER_ID_SIZE);
-    *(id) = ntohl(*id);
+    memcpy(client_id, msg + off, SENDER_ID_SIZE);
+    *(client_id) = ntohl(*client_id);
     off += SENDER_ID_SIZE;
 
     size_t name_len = msg_len - off;
@@ -752,7 +876,8 @@ int parse_client_id_and_name(const uint8_t* msg, uint32_t msg_len, uint32_t* id,
     return 0;
 }
 
-int send_server_ready_users(Client* c, Client* clients[], int clients_count, uint32_t* message_id)
+int send_server_ready_users(Client* c, uint32_t room_id, Client* clients[], int clients_count,
+                            uint32_t* message_id)
 {
     if (!c || !clients)
     {
@@ -760,10 +885,11 @@ int send_server_ready_users(Client* c, Client* clients[], int clients_count, uin
     }
     for (int i = 0; i < clients_count; i++)
     {
-        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i])
+        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
+            clients[i]->room_id == room_id)
         {
-            if (send_server_user_event(c, PKT_JOIN, clients[i]->name, clients[i]->id, message_id) <
-                0)
+            if (send_server_user_event(c, room_id, PKT_JOIN, clients[i]->name, clients[i]->id,
+                                       message_id) < 0)
             {
                 return -1;
             }
