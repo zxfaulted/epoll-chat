@@ -12,42 +12,109 @@
 #include <time.h>
 #include <unistd.h>
 
-static int discard_stdin_until_newline(int fd)
+// 0 некритичная ошибка, клиент может продолжат работу
+// -1 критичная ошибка, закрыть клиент
+static int handle_input(int epfd, Client* c, char* out_buf, ssize_t bytes)
 {
-    const int N = 256;
-    uint8_t   tmp[N];
-    while (1)
+    Header h;
+    memset(&h, 0, sizeof(h));
+
+    h.version    = 1;
+    h.flags      = 0;
+    h.sender_id  = 0;
+    h.room_id    = 0;
+    h.timestamp  = 0;
+    h.message_id = 0;
+
+    if (c->state == STATE_WAIT_REGISTER_OK)
     {
-        int bytes = read(fd, tmp, N);
-        // EOF
+        return 0;
+    }
+    if (c->state == STATE_WAIT_NAME)
+    {
         if (bytes == 0)
         {
-            return 1;
+            printf("[ERROR] EMPTY NAME\n");
+            return 0;
         }
-        if (bytes < 0)
+        if (bytes > MAX_NAME_LEN)
         {
-            // прерван сигналом
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            // данных больше нет
-            if (errno == EWOULDBLOCK || errno == EAGAIN)
-            {
-                return 0;
-            }
-            perror("read");
+            printf("[ERROR] NAME IS TOO LONG\n");
+            return 0;
+        }
+        h.type = PKT_NAME;
+        if (enqueue_packet(c, &h, (const uint8_t*)out_buf, bytes) < 0)
+        {
+            fprintf(stderr, "enqueue_packet failed\n");
             return -1;
         }
-        for (int i = 0; i < bytes; i++)
+        if (set_epollout_to_client(epfd, c) < 0)
         {
-            if (tmp[i] == '\n')
+            return -1;
+        }
+        c->state = STATE_WAIT_REGISTER_OK;
+    }
+
+    if (c->state == STATE_READY)
+    {
+        if (bytes == 0)
+        {
+            return 0;
+        }
+        if (bytes > PAYLOAD_SIZE)
+        {
+            printf("[ERROR] MESSAGE TOO LONG\n");
+            return 0;
+        }
+        if (strncmp("/join ", out_buf, 6) == 0)
+        {
+            errno = 0;
+            char*         end;
+            unsigned long room = strtoul(out_buf + 6, &end, 0);
+            if (*end != '\0')
             {
+                printf("[ERROR] INVALID ROOM ID\n");
                 return 0;
+            }
+            if (end == out_buf + 6)
+            {
+                printf("[ERROR] ROOM ID IS NOT A NUMBER\n");
+                return 0;
+            }
+            if (errno == ERANGE)
+            {
+                printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
+                return 0;
+            }
+            h.type    = PKT_ROOM_CHANGE;
+            h.room_id = (uint32_t)room;
+
+            if (enqueue_packet(c, &h, NULL, 0) < 0)
+            {
+                fprintf(stderr, "enqueue_packet failed\n");
+                return -1;
+            }
+            if (set_epollout_to_client(epfd, c) < 0)
+            {
+                return -1;
+            }
+        }
+        else
+        {
+            h.type    = PKT_CHAT;
+            h.room_id = c->room_id;
+            if (enqueue_packet(c, &h, (const uint8_t*)out_buf, bytes) < 0)
+            {
+                fprintf(stderr, "enqueue_packet failed\n");
+                return -1;
+            }
+            if (set_epollout_to_client(epfd, c) < 0)
+            {
+                return -1;
             }
         }
     }
-    return -1;
+    return 0;
 }
 
 int main()
@@ -144,7 +211,12 @@ int main()
 
     char out[OUT_CAP];
     memset(out, 0, sizeof(out));
-    int need_epollout;
+
+    char stdin_line[BUF_SIZE];
+    memset(stdin_line, 0, BUF_SIZE);
+    size_t stdin_line_len  = 0;
+    int    stdin_line_drop = 0;
+
     while (1)
     {
         int nfds = epoll_wait(epfd, events, 2, -1);
@@ -155,26 +227,22 @@ int main()
         }
         for (int i = 0; i < nfds; i++)
         {
-            need_epollout      = 0;
             uint32_t   cur_evs = events[i].events;
             EpollItem* ei      = (EpollItem*)events[i].data.ptr;
 
             if (ei->item == STDIN_ITEM && cur_evs & EPOLLIN)
             {
-                char out_buf[PAYLOAD_SIZE + 1];
-                memset(&out_buf, 0, sizeof(out_buf));
-                int bytes = read(ei->fd, out_buf, sizeof(out_buf));
+                char read_buf[256];
+                int  bytes = read(ei->fd, read_buf, sizeof(read_buf));
                 if (bytes < 0)
                 {
                     if (errno == EWOULDBLOCK || errno == EAGAIN)
                     {
                         continue;
                     }
-                    else
-                    {
-                        perror("stdin read");
-                        goto cleanup;
-                    }
+
+                    perror("stdin read");
+                    goto cleanup;
                 }
                 if (bytes == 0)
                 {
@@ -184,133 +252,43 @@ int main()
                 }
                 if (bytes > 0)
                 {
-                    if (out_buf[bytes - 1] == '\n')
-                    {
-                        bytes--;
-                    }
-                    if (bytes > 0)
-                    {
-                        Header h;
-                        memset(&h, 0, sizeof(h));
 
-                        h.version    = 1;
-                        h.flags      = 0;
-                        h.sender_id  = 0;
-                        h.room_id    = 0;
-                        h.timestamp  = 0;
-                        h.message_id = 0;
-
-                        switch (c->state)
+                    for (ssize_t j = 0; j < bytes; j++)
+                    {
+                        char ch = read_buf[j];
+                        if (ch == '\n')
                         {
-                            case STATE_WAIT_REGISTER_OK:
+                            if (stdin_line_drop)
                             {
-                                break;
-                            }
-                            case STATE_WAIT_NAME:
-                            {
-                                if (bytes == 0)
+                                if (ch == '\n')
                                 {
-                                    printf("[ERROR] EMPTY NAME\n");
-                                    continue;
-                                }
-                                if (bytes > MAX_NAME_LEN)
-                                {
-                                    printf("[ERROR] NAME IS TOO LONG\n");
-                                    int drc = discard_stdin_until_newline(stdin->fd);
-                                    if (drc < 0)
-                                    {
-                                        ret = -1;
-                                        goto cleanup;
-                                    }
-                                    if (drc > 0)
-                                    {
-                                        ret = 0;
-                                        goto cleanup;
-                                    }
-                                    continue;
-                                }
-                                h.type = PKT_NAME;
-                                if (enqueue_packet(c, &h, (const uint8_t*)out_buf, bytes) < 0)
-                                {
-                                    continue;
-                                }
-                                need_epollout = 1;
-                                c->state      = STATE_WAIT_REGISTER_OK;
-                                break;
-                            }
-
-                            case STATE_READY:
-                            {
-                                if (bytes == 0)
-                                {
-                                    continue;
-                                }
-                                if (bytes > PAYLOAD_SIZE)
-                                {
-                                    printf("[ERROR] MESSAGE TOO LONG\n");
-                                    int drc = discard_stdin_until_newline(stdin->fd);
-                                    if (drc < 0)
-                                    {
-                                        ret = -1;
-                                        goto cleanup;
-                                    }
-                                    if (drc > 0)
-                                    {
-                                        ret = 0;
-                                        goto cleanup;
-                                    }
-                                    continue;
-                                }
-                                if (strncmp("/join ", out_buf, 6) == 0)
-                                {
-                                    errno = 0;
-                                    char*         end;
-                                    unsigned long room = strtoul(out_buf + 6, &end, 0);
-                                    if (*end != '\0')
-                                    {
-                                        printf("[ERROR] INVALID ROOM ID\n");
-                                        continue;
-                                    }
-                                    if (end == out_buf + 6)
-                                    {
-                                        printf("[ERROR] ROOM ID IS NOT A NUMBER\n");
-                                        continue;
-                                    }
-                                    if (errno == ERANGE)
-                                    {
-                                        printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
-                                        continue;
-                                    }
-                                    h.type    = PKT_ROOM_CHANGE;
-                                    h.room_id = (uint32_t)room;
-
-                                    if (enqueue_packet(c, &h, NULL, 0) < 0)
-                                    {
-                                        continue;
-                                    }
-                                    need_epollout = 1;
+                                    stdin_line_drop = 0;
                                 }
                                 else
                                 {
-                                    h.type    = PKT_CHAT;
-                                    h.room_id = c->room_id;
-                                    if (enqueue_packet(c, &h, (const uint8_t*)out_buf, bytes) < 0)
-                                    {
-
-                                        continue;
-                                    }
-                                    need_epollout = 1;
+                                    continue;
                                 }
-                                break;
                             }
-                        }
-                        if (need_epollout)
-                        {
-                            if (set_epollout_to_client(epfd, c) < 0)
+                            if (stdin_line_len > 0 && stdin_line[stdin_line_len - 1] == '\r')
+                            {
+                                stdin_line_len--;
+                            }
+                            stdin_line[stdin_line_len] = '\0';
+
+                            if (handle_input(epfd, c, stdin_line, stdin_line_len) < 0)
                             {
                                 goto cleanup;
                             }
+                            stdin_line_len = 0;
+                            continue;
                         }
+                        if (stdin_line_len + 1 >= sizeof(stdin_line))
+                        {
+                            printf("[ERROR] INPUT LINE TOO LONG\n");
+                            stdin_line_len  = 0;
+                            stdin_line_drop = 1;
+                        }
+                        stdin_line[stdin_line_len++] = ch;
                     }
                 }
             }
