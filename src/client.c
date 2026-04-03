@@ -217,6 +217,8 @@ int main()
     size_t stdin_line_len  = 0;
     int    stdin_line_drop = 0;
 
+    UserEntry ue[MAX_CLIENTS];
+    memset(&ue, 0, sizeof(UserEntry) * MAX_CLIENTS);
     while (1)
     {
         int nfds = epoll_wait(epfd, events, 2, -1);
@@ -344,6 +346,10 @@ int main()
                                 {
                                     continue;
                                 }
+                                if (add_user_entry(ue, joined_name, joined_id) < 0)
+                                {
+                                    continue;
+                                }
                                 size_t joined_name_len = strlen(joined_name);
                                 printf("[JOIN] %.*s#%" PRIu32 "\n", (int)joined_name_len,
                                        joined_name, joined_id);
@@ -382,6 +388,10 @@ int main()
                             {
                                 continue;
                             }
+                            if (remove_user_entry_by_id(ue, left_id) < 0)
+                            {
+                                continue;
+                            }
                             size_t left_name_len = strlen(left_name);
                             printf("[LEAVE] %.*s#%" PRIu32 "\n", (int)left_name_len, left_name,
                                    left_id);
@@ -393,8 +403,12 @@ int main()
                             memset(out, 0, sizeof(out));
                             if (payload_to_str(msg, msg_len, out, OUT_CAP) == 0)
                             {
-                                printf("[room=%" PRIu32 "] #%" PRIu32 ": %s\n", h.room_id,
-                                       h.sender_id, out);
+                                const char* name = find_user_name_by_id(ue, h.sender_id);
+                                if (name == NULL)
+                                {
+                                }
+                                printf("[room %" PRIu32 "] %s#%" PRIu32 ": %s\n", h.room_id,
+                                       name ? name : "NULL", h.sender_id, out);
                             }
                             break;
                         }
@@ -414,6 +428,7 @@ int main()
                             printf("[ROOM CHANGE] You've changed your room from %" PRIu32
                                    " to %" PRIu32 "\n",
                                    prev_room, c->room_id);
+                            memset(ue, 0, sizeof(ue[0]) * MAX_CLIENTS);
                             break;
                         }
 
