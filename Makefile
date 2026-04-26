@@ -6,8 +6,8 @@ KEYS_DIR := keys
 
 SERVER := $(BIN_DIR)/server
 CLIENT := $(BIN_DIR)/client
-SERVER_OBJ := $(OBJ_DIR)/server.o $(OBJ_DIR)/net.o $(OBJ_DIR)/crypto.o
-CLIENT_OBJ := $(OBJ_DIR)/client.o $(OBJ_DIR)/net.o $(OBJ_DIR)/crypto.o
+SERVER_OBJ := $(OBJ_DIR)/server.o $(OBJ_DIR)/net.o # $(OBJ_DIR)/crypto.o
+CLIENT_OBJ := $(OBJ_DIR)/client.o $(OBJ_DIR)/net.o # $(OBJ_DIR)/crypto.o
 SRC := $(SRC_DIR)/server.c $(SRC_DIR)/client.c
 CC := gcc
 

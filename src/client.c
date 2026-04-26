@@ -12,6 +12,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <openssl/conf.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+
 // 0 некритичная ошибка, клиент может продолжат работу
 // -1 критичная ошибка, закрыть клиент
 static int handle_input(int epfd, Client* c, char* out_buf, ssize_t bytes)

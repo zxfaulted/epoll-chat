@@ -1,6 +1,7 @@
 
 #ifndef NET_H
 #define NET_H
+// #include "crypto.h" WIP
 #include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -85,7 +86,7 @@ typedef struct Client
     Connection         conn;
     ClientState        state;
     struct sockaddr_in sa;
-
+    // KeyBundle          kb; WIP
 } Client;
 
 typedef struct Server
@@ -103,8 +104,33 @@ typedef enum
     PKT_NAME,
     PKT_ERR,
     PKT_ROOM_CHANGE,
-    PKT_ROOM_CHANGE_OK
+    PKT_ROOM_CHANGE_OK,
+
+    PKT_ENC_KEY_BUNDLE = 8,
+
+    // симметричный ключ комнаты.
+    //  все сообщения комнаты шифруются этим ключом
+    PKT_ENC_ROOM_KEY = 9,
+
+    // зашифрованные сообщения
+    PKT_ENC_CHAT = 10
 } PacketType;
+
+typedef struct
+{
+    // версия протокола
+    uint8_t version;
+    // алгоритм шифрования
+    uint8_t suite;
+    // резерв для выравнивания структуры
+    uint16_t reserved;
+    // версия ключа
+    uint32_t room_epoch;
+    // счетчик сообщения
+    uint64_t seq;
+    uint8_t  nonce[16];
+
+} EncChatHeader;
 
 // [4 frame_len]
 // [1 version]
@@ -138,6 +164,13 @@ typedef enum
     PKT_BAD_MESSAGE_ID,
     PKT_BAD_PAYLOAD_SIZE
 } PacketState;
+
+typedef struct
+{
+    uint32_t id;
+    char     name[MAX_NAME_LEN + 1];
+    int      used;
+} UserEntry;
 
 int set_nonblocking(int fd);
 
@@ -209,4 +242,13 @@ uint32_t next_message_id(uint32_t* message_id);
 PacketState validate_packet_room_change(uint32_t msg_len, Header* h);
 int         send_server_register_ok(Client* c, uint32_t room_id, const char* name, uint32_t user_id,
                                     uint32_t* message_id);
+int         add_user_entry(UserEntry* ue, const char* name, uint32_t id);
+int         remove_user_entry_by_id(UserEntry* ue, uint32_t id);
+const char* find_user_name_by_id(const UserEntry* ue, uint32_t id);
+
+// void key_bundle_init(KeyBundle* kb);
+// void key_bundle_free(KeyBundle* kb);
+// int  key_bundle_set_identity_pub(KeyBundle* kb, const uint8_t* data, uint16_t len);
+// int  key_bundle_set_vko_pub(KeyBundle* kb, const uint8_t* data, uint16_t len);
+// int  key_bundle_set_signature(KeyBundle* kb, const uint8_t* data, uint16_t len);
 #endif
