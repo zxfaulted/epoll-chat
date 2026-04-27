@@ -116,6 +116,12 @@ typedef enum
     PKT_ENC_CHAT = 10
 } PacketType;
 
+// [4 frame_len]
+// [24 Header] входит в AAD
+// [32 EncChatHeader] входит в AAD
+// [ciphertext] шифруется
+// [tag]
+// Кузнечик + MGM = AEAD
 typedef struct
 {
     // версия протокола
