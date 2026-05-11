@@ -1,7 +1,7 @@
 
 #ifndef NET_H
 #define NET_H
-// #include "crypto.h" WIP
+#include "protocol.h"
 #include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -13,28 +13,7 @@
 #define MAX_CLIENTS 1024
 #define MAX_ROOMS 128
 
-#define MAX_NAME_LEN 32
-#define BUF_SIZE 8192
-
-#define FRAME_LEN_SIZE 4
-#define VERSION_SIZE 1
-#define TYPE_SIZE 1
-#define FLAGS_SIZE 2
-#define SENDER_ID_SIZE 4
-#define ROOM_ID_SIZE 4
-#define TIMESTAMP_SIZE 8
-#define MESSAGE_ID_SIZE 4
-
 #define OUT_CAP (PAYLOAD_SIZE + 1)
-
-#define HEADER_SIZE                                                                                \
-    (VERSION_SIZE + TYPE_SIZE + FLAGS_SIZE + SENDER_ID_SIZE + ROOM_ID_SIZE + TIMESTAMP_SIZE +      \
-     MESSAGE_ID_SIZE)
-
-#define MAX_PAYLOAD_SIZE 1024
-#define PAYLOAD_SIZE MAX_PAYLOAD_SIZE
-#define PAYLOAD_ID_AND_NAME_SIZE (SENDER_ID_SIZE + MAX_NAME_LEN)
-#define PAYLOAD_REGISTER_OK_SIZE (SENDER_ID_SIZE + ROOM_ID_SIZE + MAX_NAME_LEN)
 
 // [4 frame_len]
 // [1 version]
@@ -61,9 +40,51 @@ typedef struct EpollItem
 typedef enum
 {
     STATE_WAIT_NAME,
+    STATE_WAIT_AUTH_CHALLENGE,
+    STATE_WAIT_AUTH_RESPONSE,
+
+    STATE_WAIT_REGISTER_CHALLENGE,
+    STATE_WAIT_REGISTER_COMMIT,
+
+    STATE_WAIT_KEY_BUNDLE,
     STATE_WAIT_REGISTER_OK,
+    STATE_WAIT_ROOM_KEY,
     STATE_READY
 } ClientState;
+
+typedef struct RoomPeerRecvState
+{
+    uint32_t peer_id;
+    uint64_t seq;
+    int      used;
+
+} RoomPeerRecvState;
+
+typedef struct RoomSession
+{
+    uint32_t room_id;
+
+    uint64_t epoch;
+    uint8_t  room_key[ROOM_KEY_LEN];
+
+    uint64_t send_seq;
+
+    RoomPeerRecvState recv[MAX_CLIENTS];
+
+    int used;
+} RoomSession;
+
+typedef struct PeerWrapSession
+{
+    uint32_t peer_id;
+
+    uint8_t  fingerprint[64];
+    uint16_t fingerprint_len;
+
+    uint8_t wrapping_key[32];
+
+    int used;
+} PeerWrapSession;
 
 typedef struct Connection
 {
@@ -86,7 +107,17 @@ typedef struct Client
     Connection         conn;
     ClientState        state;
     struct sockaddr_in sa;
-    // KeyBundle          kb; WIP
+
+    uint8_t* raw_kb;
+    uint16_t raw_kb_len;
+    int      has_kb;
+
+    int     has_name;
+    uint8_t challenge[32];
+    int     auth_pending;
+    int     authenticated;
+
+    int close_after_flush;
 } Client;
 
 typedef struct Server
@@ -95,29 +126,8 @@ typedef struct Server
     struct sockaddr_in sa;
 } Server;
 
-typedef enum
-{
-    PKT_CHAT = 0,
-    PKT_REGISTER_OK,
-    PKT_JOIN,
-    PKT_LEAVE,
-    PKT_NAME,
-    PKT_ERR,
-    PKT_ROOM_CHANGE,
-    PKT_ROOM_CHANGE_OK,
-
-    PKT_ENC_KEY_BUNDLE = 8,
-
-    // симметричный ключ комнаты.
-    //  все сообщения комнаты шифруются этим ключом
-    PKT_ENC_ROOM_KEY = 9,
-
-    // зашифрованные сообщения
-    PKT_ENC_CHAT = 10
-} PacketType;
-
 // [4 frame_len]
-// [24 Header] входит в AAD
+// [24 Header]
 // [32 EncChatHeader] входит в AAD
 // [ciphertext] шифруется
 // [tag]
@@ -131,32 +141,12 @@ typedef struct
     // резерв для выравнивания структуры
     uint16_t reserved;
     // версия ключа
-    uint32_t room_epoch;
+    uint64_t room_epoch;
     // счетчик сообщения
     uint64_t seq;
     uint8_t  nonce[16];
 
 } EncChatHeader;
-
-// [4 frame_len]
-// [1 version]
-// [1 type]
-// [2 flags]
-// [4 sender_id]
-// [4 room_id]
-// [8 timestamp]
-// [4 msg_id]
-// [payload]
-typedef struct Header
-{
-    uint8_t  version;
-    uint8_t  type;
-    uint16_t flags;
-    uint32_t sender_id;
-    uint32_t room_id;
-    uint64_t timestamp;
-    uint32_t message_id;
-} Header;
 
 typedef enum
 {
@@ -171,12 +161,22 @@ typedef enum
     PKT_BAD_PAYLOAD_SIZE
 } PacketState;
 
+// хранилище пользователей текущей комнаты
 typedef struct
 {
     uint32_t id;
     char     name[MAX_NAME_LEN + 1];
     int      used;
 } UserEntry;
+
+typedef struct PendingReg
+{
+    char     name[MAX_NAME_LEN + 1];
+    uint32_t id;
+    uint8_t  challenge[32];
+    uint64_t expires_at;
+    int      used;
+} PendingReg;
 
 int set_nonblocking(int fd);
 
@@ -237,7 +237,7 @@ const char* packet_type_str(PacketType type);
 
 int payload_to_str(const uint8_t payload[], size_t len, char out[], size_t out_cap);
 
-// только для register_ok|join|leave пакетов
+// только для register_ok|jo    in|leave пакетов
 // 0 успех
 // -1 ошибка
 int send_server_user_event(Client* c, uint32_t room_id, PacketType type, const char* name,
@@ -251,10 +251,23 @@ int         send_server_register_ok(Client* c, uint32_t room_id, const char* nam
 int         add_user_entry(UserEntry* ue, const char* name, uint32_t id);
 int         remove_user_entry_by_id(UserEntry* ue, uint32_t id);
 const char* find_user_name_by_id(const UserEntry* ue, uint32_t id);
-
-// void key_bundle_init(KeyBundle* kb);
-// void key_bundle_free(KeyBundle* kb);
-// int  key_bundle_set_identity_pub(KeyBundle* kb, const uint8_t* data, uint16_t len);
-// int  key_bundle_set_vko_pub(KeyBundle* kb, const uint8_t* data, uint16_t len);
-// int  key_bundle_set_signature(KeyBundle* kb, const uint8_t* data, uint16_t len);
+int         send_kb(Client* c, uint8_t* kb, uint16_t kb_len, uint32_t owner_id, uint32_t room_id,
+                    uint32_t* message_id);
+int send_server_ready_key_bundles(int epfd, Client* c, Client* clients[], int* clients_count,
+                                  uint32_t* message_id);
+int send_server_new_key_bundle(int epfd, Client* c, Client* clients[], int clients_count,
+                               uint32_t* message_id);
+int forward_room_key_packet(int epfd, Client* clients[], int clients_count, Client* from, Header* h,
+                            uint8_t* msg, uint32_t msg_len, uint32_t* message_id);
+int check_recv_seq(RoomSession* room, uint64_t peer_id, uint64_t recv_seq);
+int server_verify_challenge(Client* c, uint8_t* msg, uint16_t msg_len);
+int add_pending_registration(PendingReg* pr, const char* name, uint8_t* challenge,
+                             uint32_t client_id);
+void remove_pending_registration(PendingReg* pr, const char* name, uint32_t client_id);
+int  find_in_pending_registrations(PendingReg* pr, const char* name, uint32_t client_id);
+int  client_send_pkt_register_commit(int epfd, Client* c, uint8_t* identity_pub_der,
+                                     uint16_t identity_pub_der_len, uint8_t* sig, uint16_t siglen);
+int  server_send_registration_challenge(int epfd, Client* c, uint32_t temp_client_id,
+                                        const uint8_t challenge[CHALLENGE_LEN],
+                                        uint32_t*     message_id);
 #endif

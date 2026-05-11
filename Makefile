@@ -1,53 +1,69 @@
-SRC_DIR := src
-OBJ_DIR := obj
-BIN_DIR := bin
-KEYS_DIR := keys
-
-
-SERVER := $(BIN_DIR)/server
-CLIENT := $(BIN_DIR)/client
-SERVER_OBJ := $(OBJ_DIR)/server.o $(OBJ_DIR)/net.o # $(OBJ_DIR)/crypto.o
-CLIENT_OBJ := $(OBJ_DIR)/client.o $(OBJ_DIR)/net.o # $(OBJ_DIR)/crypto.o
-SRC := $(SRC_DIR)/server.c $(SRC_DIR)/client.c
 CC := gcc
 
-#CFLAGS := -Wall -Wextra -pedantic -Iinclude -g -O0 -fsanitize=address -fno-omit-frame-pointer
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude
+OPENSSL_PREFIX := $(CURDIR)/.deps/openssl
+OPENSSL_LIBDIR := $(shell if [ -d "$(OPENSSL_PREFIX)/lib64" ]; then echo "$(OPENSSL_PREFIX)/lib64"; else echo "$(OPENSSL_PREFIX)/lib"; fi)
 
-.PHONY: run run-server run-client stop clean
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
+          -Iinclude \
+          -I$(OPENSSL_PREFIX)/include \
+          -D_POSIX_C_SOURCE=200809L
 
-run: stop clean all 
-	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+10+10 -hold -e "./$(SERVER)" &
-	sleep 0.1
-	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+460+10 -hold -e "./$(CLIENT)" &
-	sleep 0.1
-	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+910+10 -hold -e "./$(CLIENT)" &
+LDFLAGS := -L$(OPENSSL_LIBDIR) -Wl,-rpath,'$$ORIGIN/lib'
+LDLIBS := -lssl -lcrypto
 
-run-server: $(SERVER) 
-	./$(SERVER)
+OBJ_DIR := obj
+BIN_DIR := bin
+SRC_DIR := src
 
-run-client: $(CLIENT)
-	./$(CLIENT)
+COMMON_OBJS := \
+	$(OBJ_DIR)/crypto.o \
+	$(OBJ_DIR)/net.o \
+		$(OBJ_DIR)/ksi.o
 
-all: $(SERVER) $(CLIENT)
+CLIENT_OBJS := \
+	$(OBJ_DIR)/client.o \
+	$(COMMON_OBJS) 
 
-$(SERVER): $(SERVER_OBJ)
-	mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@
+SERVER_OBJS := \
+	$(OBJ_DIR)/server.o \
+	$(COMMON_OBJS) 
 
-$(CLIENT): $(CLIENT_OBJ)
-	mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@
+.PHONY: all deps clean run
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
-	mkdir -p $(OBJ_DIR)
-	mkdir -p $(KEYS_DIR)
-	chmod 700 $(KEYS_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+run: 
+	$(MAKE) stop
+	$(MAKE) clean
+	$(MAKE) $(BIN_DIR)/client $(BIN_DIR)/server
+	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+910+10 -hold -e "./$(BIN_DIR)/server" &
+	sleep 1
+	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+10+10 -hold -e "./$(BIN_DIR)/client Alice" &
+	sleep 1
+	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+460+10 -hold -e "./$(BIN_DIR)/client Bob" &
+
+all: $(BIN_DIR)/client $(BIN_DIR)/server
+
 
 stop:
-	-pkill -f ./$(SERVER)
-	-pkill -f ./$(CLIENT)
+	-@pkill -f "./$(BIN_DIR)/server" 2>/dev/null || true
+	-@pkill -f "./$(BIN_DIR)/client" 2>/dev/null || true
 
-clean: stop
-	rm -rf $(OBJ_DIR) $(BIN_DIR)
+deps:
+	./build_deps.sh
+
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BIN_DIR)/client: $(CLIENT_OBJS) | $(BIN_DIR)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+
+$(BIN_DIR)/server: $(SERVER_OBJS) | $(BIN_DIR)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+
+clean:
+	rm -rf $(OBJ_DIR)/*.o $(BIN_DIR)/client $(BIN_DIR)/server

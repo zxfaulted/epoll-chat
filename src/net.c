@@ -1,5 +1,6 @@
 
 #include "net.h"
+#include "crypto.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -88,6 +89,7 @@ static void remove_client(int epfd, int cur_fd, Client* clients[], int* clients_
                 perror("epoll_ctl DEL");
             }
             close(cur_fd);
+            OPENSSL_free(temp->raw_kb);
             free(temp);
             break;
         }
@@ -107,7 +109,7 @@ PacketState validate_packet_name(uint32_t msg_len, Header* h)
     {
         return PKT_BAD_VERSION;
     }
-    if (h->type != PKT_NAME)
+    if (h->type != PKT_NAME && h->type != PKT_REGISTER_BEGIN)
     {
         return PKT_BAD_TYPE;
     }
@@ -260,6 +262,22 @@ const char* packet_type_str(PacketType type)
             return "PKT_ROOM_CHANGE";
         case PKT_ROOM_CHANGE_OK:
             return "PKT_ROOM_CHANGE_OK";
+        case PKT_ENC_KEY_BUNDLE:
+            return "PKT_ENC_KEY_BUNDLE";
+        case PKT_ENC_ROOM_KEY:
+            return "PKT_ENC_ROOM_KEY";
+        case PKT_ENC_CHAT:
+            return "PKT_ENC_CHAT";
+        case PKT_REGISTER_BEGIN:
+            return "PKT_REGISTER_BEGIN";
+        case PKT_REGISTER_CHALLENGE:
+            return "PKT_REGISTER_CHALLENGE";
+        case PKT_REGISTER_COMMIT:
+            return "PKT_REGISTER_COMMIT";
+        case PKT_AUTH_CHALLENGE:
+            return "PKT_AUTH_CHALLENGE";
+        case PKT_AUTH_RESPONSE:
+            return "PKT_AUTH_RESPONSE";
         default:
             return "PKT_UNKNOWN";
     }
@@ -307,6 +325,7 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
         new_client->ei.fd   = new_client_fd;
         new_client->state   = STATE_WAIT_NAME;
         new_client->name[0] = '\0';
+        new_client->room_id = 1;
 
         struct epoll_event ev;
         ev.events   = EPOLLIN | EPOLLHUP | EPOLLRDHUP;
@@ -395,7 +414,7 @@ int send_server_user_event(Client* c, uint32_t room_id, PacketType type, const c
                            uint32_t user_id, uint32_t* message_id)
 {
     if (type != PKT_JOIN && type != PKT_LEAVE && type != PKT_REGISTER_OK &&
-        type != PKT_ROOM_CHANGE_OK)
+        type != PKT_ROOM_CHANGE_OK && type != PKT_ROOM_SYNC_DONE)
     {
         return -1;
     }
@@ -477,25 +496,31 @@ void broadcast_user_event(int epfd, Client* skip, uint32_t room_id, Client* clie
     {
         return;
     }
+    uint32_t skip_id                     = skip->id;
+    char     skip_name[MAX_NAME_LEN + 1] = {0};
+    memcpy(skip_name, skip->name, MAX_NAME_LEN);
+    skip_name[MAX_NAME_LEN] = '\0';
+
     int i = 0;
     while (i < *clients_count)
     {
-        if (!clients[i] || skip == clients[i])
+        if (clients[i] == skip || clients[i]->id == skip_id)
         {
             i++;
             continue;
         }
+
         if (clients[i]->state != STATE_READY)
         {
             i++;
             continue;
         }
-        if (clients[i]->room_id != skip->room_id)
+        if (clients[i]->room_id != room_id)
         {
             i++;
             continue;
         }
-        if (send_server_user_event(clients[i], room_id, type, skip->name, skip->id, message_id) < 0)
+        if (send_server_user_event(clients[i], room_id, type, skip_name, skip_id, message_id) < 0)
         {
             i++;
             continue;
@@ -542,6 +567,10 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
 // [payload]
 int enqueue_packet(Client* c, Header* header, const uint8_t* msg, uint32_t len)
 {
+    if (!c || !header || (!msg && len > 0) || len > PAYLOAD_SIZE)
+    {
+        return -1;
+    }
     // если пакет не влезает, делается смещение неотправленного в начало
     // -4 как проверка от переполнения
     uint32_t packet_size = FRAME_LEN_SIZE + HEADER_SIZE + len;
@@ -604,7 +633,14 @@ int enqueue_packet(Client* c, Header* header, const uint8_t* msg, uint32_t len)
     c->conn.out_len += MESSAGE_ID_SIZE;
 
     // [payload]
-    memcpy(c->conn.out_buf + c->conn.out_len, msg, len);
+    if (len > 0)
+    {
+        if (!msg)
+        {
+            return -1;
+        }
+        memcpy(c->conn.out_buf + c->conn.out_len, msg, len);
+    }
     c->conn.out_len += len;
     return 0;
 }
@@ -968,4 +1004,355 @@ const char* find_user_name_by_id(const UserEntry* ue, uint32_t id)
         return ue[i].name;
     }
     return NULL;
+}
+
+int send_kb(Client* c, uint8_t* kb, uint16_t kb_len, uint32_t owner_id, uint32_t room_id,
+            uint32_t* message_id)
+{
+    Header h     = {0};
+    h.type       = PKT_ENC_KEY_BUNDLE;
+    h.sender_id  = owner_id;
+    h.room_id    = room_id;
+    h.message_id = message_id ? next_message_id(message_id) : 0;
+    h.timestamp  = (uint64_t)time(NULL);
+    h.version    = 1;
+    h.flags      = 0;
+
+    if (enqueue_packet(c, &h, kb, kb_len) < 0)
+    {
+        fprintf(stderr, "enqueue_packet failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+int send_server_ready_key_bundles(int epfd, Client* c, Client* clients[], int* clients_count,
+                                  uint32_t* message_id)
+{
+    if (!c || !clients)
+    {
+        return -1;
+    }
+    for (int i = 0; i < *clients_count; i++)
+    {
+        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
+            clients[i]->room_id == c->room_id && clients[i]->has_kb == 1)
+        {
+            if (send_kb(c, clients[i]->raw_kb, clients[i]->raw_kb_len, clients[i]->id,
+                        clients[i]->room_id, message_id) < 0)
+            {
+                fprintf(stderr, "send_kb failed\n");
+                return -1;
+            }
+            if (set_epollout_to_client(epfd, c) < 0)
+            {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+// рассылка key bundle вошедшего всем существующим в данной комнате
+int send_server_new_key_bundle(int epfd, Client* c, Client* clients[], int clients_count,
+                               uint32_t* message_id)
+{
+
+    if (!c || !clients)
+    {
+        return -1;
+    }
+    for (int i = 0; i < clients_count; i++)
+    {
+        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
+            clients[i]->room_id == c->room_id && clients[i]->has_kb == 1)
+        {
+            if (send_kb(clients[i], c->raw_kb, c->raw_kb_len, c->id, c->room_id, message_id) < 0)
+            {
+                fprintf(stderr, "send_kb failed\n");
+                return -1;
+            }
+            if (set_epollout_to_client(epfd, clients[i]) < 0)
+            {
+                fprintf(stderr, "send_kb failed\n");
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+Client* find_client(Client* clients[], int clients_count, uint32_t client_id)
+{
+    for (int i = 0; i < clients_count; i++)
+    {
+        if (clients[i] && clients[i]->id == client_id)
+        {
+            return clients[i];
+        }
+    }
+    return NULL;
+}
+
+int forward_room_key_packet(int epfd, Client* clients[], int clients_count, Client* from, Header* h,
+                            uint8_t* msg, uint32_t msg_len, uint32_t* message_id)
+{
+    if (!clients || !from || !h || !msg || !message_id)
+    {
+        return -1;
+    }
+
+    if (msg_len != PKT_ENC_ROOM_KEY_PAYLOAD_LEN)
+    {
+        send_server_error(epfd, from, "WRONG PAYLOAD LEN", message_id);
+        return -1;
+    }
+
+    if (h->room_id != from->room_id)
+    {
+        send_server_error(epfd, from, "YOU ARE NOT IN THIS ROOM", message_id);
+        return 0;
+    }
+
+    uint32_t to_client_id = get_u32_be(msg);
+
+    if (to_client_id == from->id)
+    {
+        send_server_error(epfd, from, "YOU ARE NOT IN THIS ROOM", message_id);
+        return 0;
+    }
+
+    Client* to = find_client(clients, clients_count, to_client_id);
+    if (!to)
+    {
+        send_server_error(epfd, from, "NO CLIENT WITH THAT ID", message_id);
+        return 0;
+    }
+
+    if (to->room_id != from->room_id)
+    {
+        send_server_error(epfd, from, "YOU ARE NOT IN DIFFERENT ROOMS", message_id);
+        return 0;
+    }
+
+    Header h_out     = {0};
+    h_out.flags      = 0;
+    h_out.message_id = next_message_id(message_id);
+    h_out.room_id    = from->room_id;
+    h_out.sender_id  = from->id;
+    h_out.timestamp  = (uint64_t)time(NULL);
+    h_out.type       = PKT_ENC_ROOM_KEY;
+    h_out.version    = 1;
+
+    if (enqueue_packet(to, &h_out, msg, msg_len) < 0)
+    {
+        return -1;
+    }
+
+    if (set_epollout_to_client(epfd, to) < 0)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+// [1  enc_version]
+// [1  suite]
+// [2  reserved]
+// [8  room_epoch]
+// [8  seq]
+// [16 nonce]
+// [N  ciphertext]
+// [16 tag]
+int check_recv_seq(RoomSession* room, uint64_t peer_id, uint64_t recv_seq)
+{
+    RoomPeerRecvState* slot = NULL;
+    for (size_t i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (room->recv[i].used && room->recv[i].peer_id == peer_id)
+        {
+            slot = &room->recv[i];
+            break;
+        }
+    }
+    if (!slot)
+    {
+        for (size_t i = 0; i < MAX_CLIENTS; i++)
+        {
+            if (!room->recv[i].used)
+            {
+                slot          = &room->recv[i];
+                slot->peer_id = peer_id;
+                slot->seq     = 0;
+                slot->used    = 1;
+                break;
+            }
+        }
+    }
+    if (!slot)
+    {
+        fprintf(stderr, "recv table is full\n");
+        return -1;
+    }
+
+    if (slot->seq >= recv_seq)
+    {
+        fprintf(stderr, "replay detected for peer#%" PRIu64 "\n", peer_id);
+        return -1;
+    }
+    slot->seq = recv_seq;
+    return 0;
+}
+
+int add_pending_registration(PendingReg* pr, const char* name, uint8_t* challenge,
+                             uint32_t client_id)
+{
+    int idx = find_in_pending_registrations(pr, name, client_id);
+    if (idx >= 0)
+    {
+        if (pr[idx].expires_at > (uint64_t)time(NULL))
+        {
+            return -2;
+        }
+        else
+        {
+            pr[idx].used = 0;
+        }
+    }
+    for (int i = 0; i < MAX_PENDING_REGISTRATIONS; i++)
+    {
+        if (!pr[i].used)
+        {
+            strncpy(pr[i].name, name, MAX_NAME_LEN + 1);
+            if (challenge)
+            {
+                memcpy(pr[i].challenge, challenge, CHALLENGE_LEN);
+            }
+            pr[i].id         = client_id;
+            pr[i].used       = 1;
+            pr[i].expires_at = (uint64_t)time(NULL) + (uint64_t)60;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int find_in_pending_registrations(PendingReg* pr, const char* name, uint32_t client_id)
+{
+    for (int i = 0; i < MAX_PENDING_REGISTRATIONS; i++)
+    {
+        if (!pr[i].used)
+        {
+            continue;
+        }
+        if (strcmp(pr[i].name, name) != 0)
+        {
+            continue;
+        }
+        if (pr[i].expires_at <= (uint64_t)time(NULL))
+        {
+            pr[i].used = 0;
+            continue;
+        }
+        if (pr[i].id != client_id)
+        {
+            continue;
+        }
+        return i;
+    }
+    return -1;
+}
+
+void remove_pending_registration(PendingReg* pr, const char* name, uint32_t client_id)
+{
+    for (int i = 0; i < MAX_PENDING_REGISTRATIONS; i++)
+    {
+        if (strcmp(pr[i].name, name) == 0 && pr[i].id == client_id)
+        {
+            pr[i].used = 0;
+        }
+    }
+}
+
+// [2 identity_pub_der_len]
+// [identity_pub_der]
+// [2 signature_len]
+// [signature]
+int client_send_pkt_register_commit(int epfd, Client* c, uint8_t* identity_pub_der,
+                                    uint16_t identity_pub_der_len, uint8_t* sig, uint16_t siglen)
+{
+    int    ret   = -1;
+    Header h     = {0};
+    h.flags      = 0;
+    h.message_id = 0;
+    h.room_id    = c->room_id;
+    h.sender_id  = c->id;
+    h.timestamp  = (uint64_t)time(NULL);
+    h.type       = PKT_REGISTER_COMMIT;
+    h.version    = 1;
+
+    uint32_t out_buf_len = 2 + identity_pub_der_len + 2 + siglen;
+    uint8_t* out_buf     = OPENSSL_malloc(out_buf_len);
+    if (!out_buf)
+    {
+        ossl_print_error("OPENSSL_malloc");
+        return -1;
+    }
+    uint8_t* p   = out_buf;
+    size_t   off = 0;
+
+    put_u16_be(p + off, identity_pub_der_len);
+    off += 2;
+    memcpy(p + off, identity_pub_der, identity_pub_der_len);
+    off += identity_pub_der_len;
+    put_u16_be(p + off, siglen);
+    off += 2;
+    memcpy(p + off, sig, siglen);
+
+    if (enqueue_packet(c, &h, out_buf, out_buf_len) < 0)
+    {
+        fprintf(stderr, "enqueue_packet");
+        goto cleanup;
+    }
+    if (set_epollout_to_client(epfd, c) < 0)
+    {
+        fprintf(stderr, "enqueue_packet");
+        goto cleanup;
+    }
+    ret = 0;
+cleanup:
+    OPENSSL_free(out_buf);
+    return ret;
+}
+
+int server_send_registration_challenge(int epfd, Client* c, uint32_t client_id,
+                                       const uint8_t challenge[CHALLENGE_LEN], uint32_t* message_id)
+{
+    if (!c || !message_id)
+    {
+        return -1;
+    }
+    uint8_t payload[4 + CHALLENGE_LEN];
+    put_u32_be(payload, client_id);
+    memcpy(payload + 4, challenge, CHALLENGE_LEN);
+
+    Header h     = {0};
+    h.version    = 1;
+    h.type       = PKT_REGISTER_CHALLENGE;
+    h.sender_id  = SERVER_ID;
+    h.room_id    = 0;
+    h.message_id = next_message_id(message_id);
+    h.timestamp  = (uint64_t)time(NULL);
+
+    if (enqueue_packet(c, &h, payload, sizeof(payload)) < 0)
+    {
+        fprintf(stderr, "enqueue_packet failed\n");
+        return -1;
+    }
+    if (set_epollout_to_client(epfd, c) < 0)
+    {
+        fprintf(stderr, "set_epollout_to_client failed\n");
+        return -1;
+    }
+    return 0;
 }
