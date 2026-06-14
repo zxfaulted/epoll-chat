@@ -3,30 +3,38 @@ CC := gcc
 OPENSSL_PREFIX := $(CURDIR)/.deps/openssl
 OPENSSL_LIBDIR := $(shell if [ -d "$(OPENSSL_PREFIX)/lib64" ]; then echo "$(OPENSSL_PREFIX)/lib64"; else echo "$(OPENSSL_PREFIX)/lib"; fi)
 
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
-          -Iinclude \
-          -I$(OPENSSL_PREFIX)/include \
-          -D_POSIX_C_SOURCE=200809L
-
-LDFLAGS := -L$(OPENSSL_LIBDIR) -Wl,-rpath,'$$ORIGIN/lib'
-LDLIBS := -lssl -lcrypto
-
 OBJ_DIR := obj
 BIN_DIR := bin
 SRC_DIR := src
 
+SRC := $(wildcard $(SRC_DIR)/*.c)
+OBJ := $(SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
+          -Iinclude \
+          -I$(OPENSSL_PREFIX)/include \
+          -D_POSIX_C_SOURCE=200809L 
+
+DEPFLAGS := -MMD -MP
+DEP := $(OBJ.o=.d)
+
+LDFLAGS := -L$(OPENSSL_LIBDIR) -Wl,-rpath,'$$ORIGIN/lib'
+LDLIBS := -lssl -lcrypto
+
+CLIENT_SRC := $(SRC_DIR)/client.c
+SERVER_SRC := $(SRC_DIR)/server.c
+
+COMMON_SRC := $(filter-out $(CLIENT_SRC) $(SERVER_SRC), $(SRC))
+
 COMMON_OBJS := \
-	$(OBJ_DIR)/crypto.o \
-	$(OBJ_DIR)/net.o \
-		$(OBJ_DIR)/ksi.o
+	$(COMMON_SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
-CLIENT_OBJS := \
-	$(OBJ_DIR)/client.o \
-	$(COMMON_OBJS) 
 
-SERVER_OBJS := \
-	$(OBJ_DIR)/server.o \
-	$(COMMON_OBJS) 
+CLIENT := $(BIN_DIR)/client
+SERVER := $(BIN_DIR)/server
+CLIENT_OBJS := $(OBJ_DIR)/client.o $(COMMON_OBJS)
+SERVER_OBJS := $(OBJ_DIR)/server.o $(COMMON_OBJS)
+
 
 .PHONY: all deps clean run
 
@@ -57,13 +65,15 @@ $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BIN_DIR)/client: $(CLIENT_OBJS) | $(BIN_DIR)
+$(CLIENT): $(CLIENT_OBJS) | $(BIN_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
-$(BIN_DIR)/server: $(SERVER_OBJS) | $(BIN_DIR)
+$(SERVER): $(SERVER_OBJS) | $(BIN_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+
+-include $(DEP)
 
 clean:
-	rm -rf $(OBJ_DIR)/*.o $(BIN_DIR)/client $(BIN_DIR)/server
+	rm -rf $(OBJ_DIR)/*.o $(BIN_DIR)/client $(BIN_DIR)/server $(OBJ_DIR)

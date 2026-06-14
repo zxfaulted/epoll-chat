@@ -1,5 +1,7 @@
 #include "ksi.h"
 #include "crypto.h"
+#include "fs_utils.h"
+#include "pem_io.h"
 #include "protocol.h"
 #include <ctype.h>
 #include <errno.h>

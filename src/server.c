@@ -1,6 +1,9 @@
+#include "auth.h"
 #include "crypto.h"
+#include "key_bundle.h"
 #include "ksi.h"
 #include "net.h"
+#include "transport.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -626,7 +629,6 @@ int main()
                             c->state = STATE_WAIT_KEY_BUNDLE;
                             break;
                         }
-
                         case STATE_WAIT_KEY_BUNDLE:
                         {
                             // 1. Проверить размер payload.
@@ -856,7 +858,6 @@ int main()
                             c->state = STATE_READY;
                             break;
                         }
-
                         case STATE_WAIT_ROOM_KEY:
                             break;
                         case STATE_WAIT_AUTH_CHALLENGE:
@@ -865,7 +866,6 @@ int main()
                             break;
                         case STATE_WAIT_REGISTER_CHALLENGE:
                             break;
-
                         case STATE_READY:
                             rc = recv_into_inbuf(c);
                             if (rc < 0)
@@ -1029,7 +1029,7 @@ int main()
                                         uint32_t prev_room_id = c->room_id;
                                         c->room_id            = h.room_id;
                                         printf("Client %s#%" PRIu32 " changed room from %" PRIu32
-                                               "to %" PRIu32 "\n",
+                                               " to %" PRIu32 "\n",
                                                c->name, c->id, prev_room_id, c->room_id);
                                         // рассылка PKT_JOIN в новую комнату
                                         broadcast_user_event(epfd, c, c->room_id, clients,

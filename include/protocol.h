@@ -7,7 +7,6 @@
 #define MAX_NAME_LEN 32
 #define MAX_PAYLOAD_SIZE 1024
 #define PAYLOAD_SIZE MAX_PAYLOAD_SIZE
-
 #define BUF_SIZE 8192
 
 #define FRAME_LEN_SIZE 4
@@ -26,23 +25,19 @@
 #define PAYLOAD_ID_AND_NAME_SIZE (SENDER_ID_SIZE + MAX_NAME_LEN)
 #define PAYLOAD_REGISTER_OK_SIZE (SENDER_ID_SIZE + ROOM_ID_SIZE + MAX_NAME_LEN)
 
-// [4 to_client_id]
-// [8 Fepoch]
-// [16 nonce]
-// [16 tag]
-// [32 encrypted_room_key]
-#define PKT_ENC_ROOM_KEY_NONCE_LEN 16
-#define PKT_ENC_ROOM_KEY_TAG_LEN 16
-#define PKT_ENC_ROOM_KEY_CIPHERTEXT_LEN ROOM_KEY_LEN
-#define PKT_ENC_ROOM_KEY_PAYLOAD_LEN                                                               \
-    (4 + 8 + PKT_ENC_ROOM_KEY_NONCE_LEN + PKT_ENC_ROOM_KEY_TAG_LEN +                               \
-     PKT_ENC_ROOM_KEY_CIPHERTEXT_LEN)
-#define ROOM_KEY_LEN 32
-#define WRAPPING_KEY_LEN 32
+// AAD
+// [1  packet_type]
+// [4  sender_id]
+// [4  to_client_id]#define ROOM_PASS_KEY_LEN  32
 
-#define MAX_PENDING_REGISTRATIONS 128
-#define REGISTRATION_TTL_SECONDS 60
-#define CHALLENGE_LEN 32
+// [4 room_id]
+// [8  epoch]
+#define PACKET_TYPE_LEN 1
+#define SENDER_ID_LEN 4
+#define TO_CLIENT_ID_LEN 4
+#define ROOM_ID_LEN 4
+#define EPOCH_LEN 8
+#define AAD_LEN (PACKET_TYPE_LEN + SENDER_ID_LEN + TO_CLIENT_ID_LEN + ROOM_ID_LEN + EPOCH_LEN)
 
 // [4 frame_len]
 // [1 version]
@@ -66,45 +61,55 @@ typedef struct Header
 
 typedef enum
 {
-    PKT_CHAT           = 0,
-    PKT_REGISTER       = 1,
-    PKT_REGISTER_OK    = 2,
-    PKT_JOIN           = 3,
-    PKT_LEAVE          = 4,
-    PKT_NAME           = 5,
-    PKT_ERR            = 6,
-    PKT_ROOM_CHANGE    = 7,
+    PKT_CHAT        = 0,
+    PKT_REGISTER    = 1,
+    PKT_REGISTER_OK = 2,
+
+    PKT_ROOM_CREATE          = 3,
+    PKT_ROOM_CREATE_PASSWORD = 4,
+
+    // client -> server [4 room_id]
+    PKT_ROOM_JOIN_BEGIN = 5,
+
+    // server -> client [4 room_id][16 salt][32 nonce]
+    PKT_ROOM_JOIN_CHALLENGE = 6,
+
+    // client -> server [4 room_id][32 proof]
+    PKT_ROOM_JOIN_PROOF = 7,
+
+    // server -> client PKT_ROOM_CHANGE_OK/PKT_ERR
     PKT_ROOM_CHANGE_OK = 8,
 
-    PKT_AUTH_CHALLENGE = 9,
+    PKT_LEAVE = 9,
+    PKT_NAME  = 10,
+    PKT_ERR   = 11,
 
-    PKT_AUTH_RESPONSE = 10,
-
-    PKT_AUTH_OK = 11,
-
-    PKT_ENC_KEY_BUNDLE = 12,
+    PKT_AUTH_CHALLENGE = 12,
+    PKT_AUTH_RESPONSE  = 13,
+    PKT_AUTH_OK        = 14,
+    PKT_ENC_KEY_BUNDLE = 15,
 
     // симметричный ключ комнаты.
-    //  все сообщения комнаты шифруются этим ключом
-    PKT_ENC_ROOM_KEY = 13,
+    // все сообщения комнаты шифруются этим ключом
+    PKT_ENC_ROOM_KEY = 16,
 
     // зашифрованные сообщения
-    PKT_ENC_CHAT = 14,
+    PKT_ENC_CHAT = 17,
 
     // после отправки списка пользователей
     // и чужих key bundles сервер должен отправлять
-    PKT_ROOM_SYNC_DONE = 15,
+    PKT_ROOM_SYNC_DONE = 18,
 
     // PKT_REGISTER_BEGIN
     // клиент отправляет только имя
     // [name bytes]
-    PKT_REGISTER_BEGIN = 16,
+    PKT_REGISTER_BEGIN = 19,
 
     // PKT_REGISTER_CHALLENGE
     // сервер отправляет
     // [4 temp_client_id]
     // [32 nonce]
-    PKT_REGISTER_CHALLENGE = 17,
+    PKT_REGISTER_CHALLENGE = 20,
 
     // PKT_REGISTER_COMMIT
     // Клиент отправляет:
@@ -114,7 +119,22 @@ typedef enum
     // [signature]
     // подписывается контекст
     // "chat_register_v1" || temp_client_id || username || nonce || identity_pub_der
-    PKT_REGISTER_COMMIT = 18
+    PKT_REGISTER_COMMIT = 21,
+    PKT_ROOM_CHANGE,
+    PKT_JOIN
 } PacketType;
+
+typedef enum
+{
+    PKT_OK               = 0,
+    PKT_BAD_VERSION      = 1,
+    PKT_BAD_TYPE         = 2,
+    PKT_BAD_FLAGS        = 3,
+    PKT_BAD_SENDER_ID    = 4,
+    PKT_BAD_ROOM_ID      = 5,
+    PKT_BAD_TIMESTAMP    = 6,
+    PKT_BAD_MESSAGE_ID   = 7,
+    PKT_BAD_PAYLOAD_SIZE = 8
+} PacketState;
 
 #endif

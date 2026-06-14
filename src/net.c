@@ -1,6 +1,8 @@
-
 #include "net.h"
+#include "auth.h"
 #include "crypto.h"
+#include "room.h"
+#include "transport.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -12,20 +14,6 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
-
-#define ntohll(x) htonll(x)
-
-static uint64_t htonll(uint64_t x)
-{
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    uint32_t low    = htonl((uint32_t)(x & 0xFFFFFFFFULL));
-    uint32_t high   = htonl((uint32_t)(x >> 32));
-    uint64_t result = ((uint64_t)low << 32) | high;
-    return result;
-#else
-    return x;
-#endif
-}
 
 // strnlen из <string.h> не входит в ISO C11
 // для возможности сборки с -std=c11
@@ -41,22 +29,6 @@ static uint64_t htonll(uint64_t x)
 uint32_t next_message_id(uint32_t* message_id)
 {
     return ++(*message_id);
-}
-
-// 0 успех
-// -1 ошибка
-int set_nonblocking(int server_fd)
-{
-    int flags = fcntl(server_fd, F_GETFL, 0);
-    if (flags < 0)
-    {
-        return -1;
-    }
-    if (fcntl(server_fd, F_SETFL, flags | O_NONBLOCK) < 0)
-    {
-        return -1;
-    }
-    return 0;
 }
 
 int payload_to_str(const uint8_t payload[], size_t len, char out[], size_t out_cap)
@@ -213,74 +185,6 @@ PacketState validate_packet_room_change(uint32_t msg_len, Header* h)
         return PKT_BAD_PAYLOAD_SIZE;
     }
     return PKT_OK;
-}
-
-const char* packet_state_str(PacketState st)
-{
-    switch (st)
-    {
-        case PKT_OK:
-            return "PKT_OK";
-        case PKT_BAD_VERSION:
-            return "PKT_BAD_VERSION";
-        case PKT_BAD_FLAGS:
-            return "PKT_BAD_FLAGS";
-        case PKT_BAD_SENDER_ID:
-            return "PKT_BAD_SENDER_ID";
-        case PKT_BAD_ROOM_ID:
-            return "PKT_BAD_ROOM_ID";
-        case PKT_BAD_TIMESTAMP:
-            return "PKT_BAD_TIMESTAMP";
-        case PKT_BAD_MESSAGE_ID:
-            return "PKT_BAD_MESSAGE_ID";
-        case PKT_BAD_PAYLOAD_SIZE:
-            return "PKT_BAD_PAYLOAD_SIZE";
-        case PKT_BAD_TYPE:
-            return "PKT_BAD_TYPE";
-        default:
-            return "UNKNOWN_PACKET_STATE";
-    }
-}
-
-const char* packet_type_str(PacketType type)
-{
-    switch (type)
-    {
-        case PKT_NAME:
-            return "PKT_NAME";
-        case PKT_CHAT:
-            return "PKT_CHAT";
-        case PKT_JOIN:
-            return "PKT_JOIN";
-        case PKT_LEAVE:
-            return "PKT_LEAVE";
-        case PKT_ERR:
-            return "PKT_ERR";
-        case PKT_REGISTER_OK:
-            return "PKT_REGISTER_OK";
-        case PKT_ROOM_CHANGE:
-            return "PKT_ROOM_CHANGE";
-        case PKT_ROOM_CHANGE_OK:
-            return "PKT_ROOM_CHANGE_OK";
-        case PKT_ENC_KEY_BUNDLE:
-            return "PKT_ENC_KEY_BUNDLE";
-        case PKT_ENC_ROOM_KEY:
-            return "PKT_ENC_ROOM_KEY";
-        case PKT_ENC_CHAT:
-            return "PKT_ENC_CHAT";
-        case PKT_REGISTER_BEGIN:
-            return "PKT_REGISTER_BEGIN";
-        case PKT_REGISTER_CHALLENGE:
-            return "PKT_REGISTER_CHALLENGE";
-        case PKT_REGISTER_COMMIT:
-            return "PKT_REGISTER_COMMIT";
-        case PKT_AUTH_CHALLENGE:
-            return "PKT_AUTH_CHALLENGE";
-        case PKT_AUTH_RESPONSE:
-            return "PKT_AUTH_RESPONSE";
-        default:
-            return "PKT_UNKNOWN";
-    }
 }
 
 int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_count,
@@ -552,260 +456,6 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
     return 0;
 }
 
-// кладет пакет сообщения msg и длины len в out_buf
-// возвращает:
-// 0 успех
-// -1 не влезло
-// [4 frame_len]
-// [1 version]
-// [1 type]
-// [2 flags]
-// [4 sender_id]
-// [4 room_id]
-// [8 timestamp]
-// [4 msg_id]
-// [payload]
-int enqueue_packet(Client* c, Header* header, const uint8_t* msg, uint32_t len)
-{
-    if (!c || !header || (!msg && len > 0) || len > PAYLOAD_SIZE)
-    {
-        return -1;
-    }
-    // если пакет не влезает, делается смещение неотправленного в начало
-    // -4 как проверка от переполнения
-    uint32_t packet_size = FRAME_LEN_SIZE + HEADER_SIZE + len;
-    if (packet_size > BUF_SIZE - c->conn.out_len)
-    {
-        if (c->conn.out_sent > 0)
-        {
-            memmove(c->conn.out_buf, c->conn.out_buf + c->conn.out_sent,
-                    c->conn.out_len - c->conn.out_sent);
-            c->conn.out_len -= c->conn.out_sent;
-            c->conn.out_sent = 0;
-        }
-    }
-    // если не влезло даже после смещения влево, ошибка
-    if (packet_size > BUF_SIZE - c->conn.out_len)
-    {
-        return -1;
-    }
-    // [4 frame_len]
-    uint32_t frame_len = htonl(HEADER_SIZE + len);
-    memcpy(c->conn.out_buf + c->conn.out_len, &frame_len, FRAME_LEN_SIZE);
-    c->conn.out_len += FRAME_LEN_SIZE;
-
-    //[1 version]
-    uint8_t hv = header->version;
-
-    memcpy(c->conn.out_buf + c->conn.out_len, &hv, VERSION_SIZE);
-    c->conn.out_len += VERSION_SIZE;
-
-    //[1 type]
-    uint8_t type = header->type;
-    memcpy(c->conn.out_buf + c->conn.out_len, &type, TYPE_SIZE);
-    c->conn.out_len += TYPE_SIZE;
-
-    // [2 flags]
-    // -1 не влезло
-    // [4 frame_len]
-    uint16_t flags = htons(header->flags);
-    memcpy(c->conn.out_buf + c->conn.out_len, &flags, FLAGS_SIZE);
-    c->conn.out_len += FLAGS_SIZE;
-
-    // [4 sender_id]
-    uint32_t sender_id = htonl(header->sender_id);
-    memcpy(c->conn.out_buf + c->conn.out_len, &sender_id, SENDER_ID_SIZE);
-    c->conn.out_len += SENDER_ID_SIZE;
-
-    // [4 room_id]
-    uint32_t room_id = htonl(header->room_id);
-    memcpy(c->conn.out_buf + c->conn.out_len, &room_id, ROOM_ID_SIZE);
-    c->conn.out_len += ROOM_ID_SIZE;
-
-    // [8 timestamp]
-    uint64_t timestamp = htonll(header->timestamp);
-    memcpy(c->conn.out_buf + c->conn.out_len, &timestamp, TIMESTAMP_SIZE);
-    c->conn.out_len += TIMESTAMP_SIZE;
-
-    // [4 msg_id]
-    uint32_t msg_id = htonl(header->message_id);
-    memcpy(c->conn.out_buf + c->conn.out_len, &msg_id, MESSAGE_ID_SIZE);
-    c->conn.out_len += MESSAGE_ID_SIZE;
-
-    // [payload]
-    if (len > 0)
-    {
-        if (!msg)
-        {
-            return -1;
-        }
-        memcpy(c->conn.out_buf + c->conn.out_len, msg, len);
-    }
-    c->conn.out_len += len;
-    return 0;
-}
-
-// recv в in_buf
-// возвращает
-// bytes > 0 при успехе
-// 0 пока нет данных
-// -1 соединение закрыто
-// -2 ошибка
-int recv_into_inbuf(Client* c)
-{
-    if (c->conn.in_len > BUF_SIZE)
-    {
-        return -2;
-    }
-
-    if (c->conn.in_len == BUF_SIZE)
-    {
-        // места больше нет, а try_pop_packet ничего не смог съесть
-        return -2;
-    }
-    ssize_t bytes = recv(c->ei.fd, c->conn.in_buf + c->conn.in_len, BUF_SIZE - c->conn.in_len, 0);
-    if (bytes == 0)
-    {
-        return -1;
-    }
-    if (bytes < 0)
-    {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-        {
-            return 0;
-        }
-        else
-        {
-            return -2;
-        }
-    }
-    c->conn.in_len += bytes;
-    return bytes;
-}
-
-// pop пакета из in_buf в dst и dst_len
-// dst должен быть размером PAYLOAD_SIZE
-// 1 при успешном извлечении
-// 0 в буфере нет полного ответа
-// -2 ошибка протокола
-
-// [4 frame_len]
-// [1 version]
-// [1 type]
-// [2 flags]
-// [4 sender_id]
-// [4 room_id]
-// [8 timestamp]
-// [4 msg_id]
-// [payload]
-int try_pop_packet(Client* c, Header* header, uint8_t* dst, uint32_t* dst_len)
-{
-    size_t off = 0;
-    // [4 frame_len]
-    uint32_t len;
-    if (c->conn.in_len < FRAME_LEN_SIZE)
-    {
-        return 0;
-    }
-    memcpy(&len, c->conn.in_buf, FRAME_LEN_SIZE);
-    off += FRAME_LEN_SIZE;
-    len = ntohl(len);
-    if (len > HEADER_SIZE + PAYLOAD_SIZE || len == 0 || len < HEADER_SIZE)
-    {
-        return -2;
-    }
-    if (c->conn.in_len < FRAME_LEN_SIZE + len)
-    {
-        return 0;
-    }
-    // [1 version]
-    memcpy(&header->version, c->conn.in_buf + off, VERSION_SIZE);
-    off += VERSION_SIZE;
-    // [1 type]
-    memcpy(&header->type, c->conn.in_buf + off, TYPE_SIZE);
-    off += TYPE_SIZE;
-    // [2 flags]
-    memcpy(&header->flags, c->conn.in_buf + off, FLAGS_SIZE);
-    off += FLAGS_SIZE;
-    // [4 sender_id]
-    memcpy(&header->sender_id, c->conn.in_buf + off, SENDER_ID_SIZE);
-    off += SENDER_ID_SIZE;
-    // [4 room_id]
-    memcpy(&header->room_id, c->conn.in_buf + off, ROOM_ID_SIZE);
-    off += ROOM_ID_SIZE;
-    // [8 timestamp]
-    memcpy(&header->timestamp, c->conn.in_buf + off, TIMESTAMP_SIZE);
-    off += TIMESTAMP_SIZE;
-    // [4 msg_id]
-    memcpy(&header->message_id, c->conn.in_buf + off, MESSAGE_ID_SIZE);
-    off += MESSAGE_ID_SIZE;
-    // [payload]
-    // -1 не влезло
-    // [4 frame_len]
-    size_t payload_len = len - HEADER_SIZE;
-    if (payload_len > PAYLOAD_SIZE)
-    {
-        return -2;
-    }
-    memcpy(dst, c->conn.in_buf + off, payload_len);
-    *dst_len = payload_len;
-
-    size_t packet_size = FRAME_LEN_SIZE + len;
-    if (packet_size > c->conn.in_len)
-    {
-        return 0;
-    }
-    memmove(c->conn.in_buf, c->conn.in_buf + packet_size, c->conn.in_len - packet_size);
-    c->conn.in_len -= (packet_size);
-
-    header->flags      = ntohs(header->flags);
-    header->sender_id  = ntohl(header->sender_id);
-    header->room_id    = ntohl(header->room_id);
-    header->timestamp  = ntohll(header->timestamp);
-    header->message_id = ntohl(header->message_id);
-    return 1;
-}
-
-// возвращает
-// 0 при успешной отправке или неготовности сокета
-// -1 при ошибке
-int flush_send(Client* c)
-{
-    while (c->conn.out_sent < c->conn.out_len)
-    {
-        ssize_t bytes = send(c->ei.fd, c->conn.out_buf + c->conn.out_sent,
-                             c->conn.out_len - c->conn.out_sent, 0);
-        if (bytes < 0)
-        {
-            // сокет не готов
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                return 0;
-            }
-            // ошибка
-            else
-            {
-                perror("send");
-                return -1;
-            }
-        }
-        else if (bytes == 0)
-        {
-            return -1;
-        }
-        else
-        {
-            c->conn.out_sent += bytes;
-        }
-    }
-    if (c->conn.out_sent == c->conn.out_len)
-    {
-        c->conn.out_sent = 0;
-        c->conn.out_len  = 0;
-    }
-    return 0;
-}
-
 int send_server_error(int epfd, Client* c, const char msg[], uint32_t* message_id)
 {
     Header h;
@@ -824,34 +474,6 @@ int send_server_error(int epfd, Client* c, const char msg[], uint32_t* message_i
     }
     if (set_epollout_to_client(epfd, c) < 0)
     {
-        return -1;
-    }
-    return 0;
-}
-
-// 0 успех
-// -1 ошибка
-int set_epollout_to_client(int epfd, Client* c)
-{
-    struct epoll_event ev;
-    ev.data.ptr = c;
-    ev.events   = EPOLLIN | EPOLLOUT | EPOLLHUP | EPOLLRDHUP | EPOLLERR;
-    if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->ei.fd, &ev) < 0)
-    {
-        perror("epoll_ctl mod epollout");
-        return -1;
-    }
-    return 0;
-}
-
-int unset_epollout_to_client(int epfd, Client* c)
-{
-    struct epoll_event ev;
-    ev.data.ptr = c;
-    ev.events   = EPOLLIN | EPOLLHUP | EPOLLRDHUP | EPOLLERR;
-    if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->ei.fd, &ev) < 0)
-    {
-        perror("epoll_ctl mod epollout");
         return -1;
     }
     return 0;
@@ -934,154 +556,6 @@ int send_server_ready_users(Client* c, uint32_t room_id, Client* clients[], int 
     return 0;
 }
 
-// 0 успех
-// -1 ошибка
-int add_user_entry(UserEntry* ue, const char* name, uint32_t id)
-{
-    if (!ue || !name)
-    {
-        return -1;
-    }
-    int empty_slot = -1;
-    for (int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if (ue[i].used == 1)
-        {
-            if (ue[i].id == id)
-            {
-                return -1;
-            }
-            continue;
-        }
-        if (empty_slot == -1)
-        {
-            empty_slot = i;
-        }
-    }
-    if (empty_slot != -1)
-    {
-        ue[empty_slot].id = id;
-        strncpy(ue[empty_slot].name, name, sizeof(ue[empty_slot].name) - 1);
-        ue[empty_slot].name[sizeof(ue[empty_slot].name) - 1] = '\0';
-        ue[empty_slot].used                                  = 1;
-        return 0;
-    }
-    return -1;
-}
-
-int remove_user_entry_by_id(UserEntry* ue, uint32_t id)
-{
-    if (!ue)
-    {
-        return -1;
-    }
-    for (int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if (ue[i].used == 0 || ue[i].id != id)
-        {
-            continue;
-        }
-        ue[i].id = 0;
-        memset(ue[i].name, 0, sizeof(ue[i].name));
-        ue[i].used = 0;
-        return 0;
-    }
-    return -1;
-}
-
-const char* find_user_name_by_id(const UserEntry* ue, uint32_t id)
-{
-    if (!ue)
-    {
-        return NULL;
-    }
-    for (int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if (ue[i].used == 0 || ue[i].id != id)
-        {
-            continue;
-        }
-        return ue[i].name;
-    }
-    return NULL;
-}
-
-int send_kb(Client* c, uint8_t* kb, uint16_t kb_len, uint32_t owner_id, uint32_t room_id,
-            uint32_t* message_id)
-{
-    Header h     = {0};
-    h.type       = PKT_ENC_KEY_BUNDLE;
-    h.sender_id  = owner_id;
-    h.room_id    = room_id;
-    h.message_id = message_id ? next_message_id(message_id) : 0;
-    h.timestamp  = (uint64_t)time(NULL);
-    h.version    = 1;
-    h.flags      = 0;
-
-    if (enqueue_packet(c, &h, kb, kb_len) < 0)
-    {
-        fprintf(stderr, "enqueue_packet failed\n");
-        return -1;
-    }
-    return 0;
-}
-
-int send_server_ready_key_bundles(int epfd, Client* c, Client* clients[], int* clients_count,
-                                  uint32_t* message_id)
-{
-    if (!c || !clients)
-    {
-        return -1;
-    }
-    for (int i = 0; i < *clients_count; i++)
-    {
-        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
-            clients[i]->room_id == c->room_id && clients[i]->has_kb == 1)
-        {
-            if (send_kb(c, clients[i]->raw_kb, clients[i]->raw_kb_len, clients[i]->id,
-                        clients[i]->room_id, message_id) < 0)
-            {
-                fprintf(stderr, "send_kb failed\n");
-                return -1;
-            }
-            if (set_epollout_to_client(epfd, c) < 0)
-            {
-                return -1;
-            }
-        }
-    }
-    return 0;
-}
-
-// рассылка key bundle вошедшего всем существующим в данной комнате
-int send_server_new_key_bundle(int epfd, Client* c, Client* clients[], int clients_count,
-                               uint32_t* message_id)
-{
-
-    if (!c || !clients)
-    {
-        return -1;
-    }
-    for (int i = 0; i < clients_count; i++)
-    {
-        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
-            clients[i]->room_id == c->room_id && clients[i]->has_kb == 1)
-        {
-            if (send_kb(clients[i], c->raw_kb, c->raw_kb_len, c->id, c->room_id, message_id) < 0)
-            {
-                fprintf(stderr, "send_kb failed\n");
-                return -1;
-            }
-            if (set_epollout_to_client(epfd, clients[i]) < 0)
-            {
-                fprintf(stderr, "send_kb failed\n");
-                return -1;
-            }
-        }
-    }
-    return 0;
-}
-
 Client* find_client(Client* clients[], int clients_count, uint32_t client_id)
 {
     for (int i = 0; i < clients_count; i++)
@@ -1092,186 +566,6 @@ Client* find_client(Client* clients[], int clients_count, uint32_t client_id)
         }
     }
     return NULL;
-}
-
-int forward_room_key_packet(int epfd, Client* clients[], int clients_count, Client* from, Header* h,
-                            uint8_t* msg, uint32_t msg_len, uint32_t* message_id)
-{
-    if (!clients || !from || !h || !msg || !message_id)
-    {
-        return -1;
-    }
-
-    if (msg_len != PKT_ENC_ROOM_KEY_PAYLOAD_LEN)
-    {
-        send_server_error(epfd, from, "WRONG PAYLOAD LEN", message_id);
-        return -1;
-    }
-
-    if (h->room_id != from->room_id)
-    {
-        send_server_error(epfd, from, "YOU ARE NOT IN THIS ROOM", message_id);
-        return 0;
-    }
-
-    uint32_t to_client_id = get_u32_be(msg);
-
-    if (to_client_id == from->id)
-    {
-        send_server_error(epfd, from, "YOU ARE NOT IN THIS ROOM", message_id);
-        return 0;
-    }
-
-    Client* to = find_client(clients, clients_count, to_client_id);
-    if (!to)
-    {
-        send_server_error(epfd, from, "NO CLIENT WITH THAT ID", message_id);
-        return 0;
-    }
-
-    if (to->room_id != from->room_id)
-    {
-        send_server_error(epfd, from, "YOU ARE NOT IN DIFFERENT ROOMS", message_id);
-        return 0;
-    }
-
-    Header h_out     = {0};
-    h_out.flags      = 0;
-    h_out.message_id = next_message_id(message_id);
-    h_out.room_id    = from->room_id;
-    h_out.sender_id  = from->id;
-    h_out.timestamp  = (uint64_t)time(NULL);
-    h_out.type       = PKT_ENC_ROOM_KEY;
-    h_out.version    = 1;
-
-    if (enqueue_packet(to, &h_out, msg, msg_len) < 0)
-    {
-        return -1;
-    }
-
-    if (set_epollout_to_client(epfd, to) < 0)
-    {
-        return -1;
-    }
-    return 0;
-}
-
-// [1  enc_version]
-// [1  suite]
-// [2  reserved]
-// [8  room_epoch]
-// [8  seq]
-// [16 nonce]
-// [N  ciphertext]
-// [16 tag]
-int check_recv_seq(RoomSession* room, uint64_t peer_id, uint64_t recv_seq)
-{
-    RoomPeerRecvState* slot = NULL;
-    for (size_t i = 0; i < MAX_CLIENTS; i++)
-    {
-        if (room->recv[i].used && room->recv[i].peer_id == peer_id)
-        {
-            slot = &room->recv[i];
-            break;
-        }
-    }
-    if (!slot)
-    {
-        for (size_t i = 0; i < MAX_CLIENTS; i++)
-        {
-            if (!room->recv[i].used)
-            {
-                slot          = &room->recv[i];
-                slot->peer_id = peer_id;
-                slot->seq     = 0;
-                slot->used    = 1;
-                break;
-            }
-        }
-    }
-    if (!slot)
-    {
-        fprintf(stderr, "recv table is full\n");
-        return -1;
-    }
-
-    if (slot->seq >= recv_seq)
-    {
-        fprintf(stderr, "replay detected for peer#%" PRIu64 "\n", peer_id);
-        return -1;
-    }
-    slot->seq = recv_seq;
-    return 0;
-}
-
-int add_pending_registration(PendingReg* pr, const char* name, uint8_t* challenge,
-                             uint32_t client_id)
-{
-    int idx = find_in_pending_registrations(pr, name, client_id);
-    if (idx >= 0)
-    {
-        if (pr[idx].expires_at > (uint64_t)time(NULL))
-        {
-            return -2;
-        }
-        else
-        {
-            pr[idx].used = 0;
-        }
-    }
-    for (int i = 0; i < MAX_PENDING_REGISTRATIONS; i++)
-    {
-        if (!pr[i].used)
-        {
-            strncpy(pr[i].name, name, MAX_NAME_LEN + 1);
-            if (challenge)
-            {
-                memcpy(pr[i].challenge, challenge, CHALLENGE_LEN);
-            }
-            pr[i].id         = client_id;
-            pr[i].used       = 1;
-            pr[i].expires_at = (uint64_t)time(NULL) + (uint64_t)60;
-            return 0;
-        }
-    }
-    return -1;
-}
-
-int find_in_pending_registrations(PendingReg* pr, const char* name, uint32_t client_id)
-{
-    for (int i = 0; i < MAX_PENDING_REGISTRATIONS; i++)
-    {
-        if (!pr[i].used)
-        {
-            continue;
-        }
-        if (strcmp(pr[i].name, name) != 0)
-        {
-            continue;
-        }
-        if (pr[i].expires_at <= (uint64_t)time(NULL))
-        {
-            pr[i].used = 0;
-            continue;
-        }
-        if (pr[i].id != client_id)
-        {
-            continue;
-        }
-        return i;
-    }
-    return -1;
-}
-
-void remove_pending_registration(PendingReg* pr, const char* name, uint32_t client_id)
-{
-    for (int i = 0; i < MAX_PENDING_REGISTRATIONS; i++)
-    {
-        if (strcmp(pr[i].name, name) == 0 && pr[i].id == client_id)
-        {
-            pr[i].used = 0;
-        }
-    }
 }
 
 // [2 identity_pub_der_len]
@@ -1325,34 +619,606 @@ cleanup:
     return ret;
 }
 
-int server_send_registration_challenge(int epfd, Client* c, uint32_t client_id,
-                                       const uint8_t challenge[CHALLENGE_LEN], uint32_t* message_id)
+int send_name_command(int epfd, Client* c, uint8_t pkt_type, const char* user_name)
 {
-    if (!c || !message_id)
+    size_t name_len = strlen(user_name);
+
+    if (name_len == 0)
     {
-        return -1;
+        printf("[ERROR] EMPTY NAME\n");
+        return 0;
     }
-    uint8_t payload[4 + CHALLENGE_LEN];
-    put_u32_be(payload, client_id);
-    memcpy(payload + 4, challenge, CHALLENGE_LEN);
 
-    Header h     = {0};
+    if (name_len > MAX_NAME_LEN)
+    {
+        printf("[ERROR] NAME IS TOO LONG\n");
+        return 0;
+    }
+
+    Header h;
+    memset(&h, 0, sizeof(h));
+
     h.version    = 1;
-    h.type       = PKT_REGISTER_CHALLENGE;
-    h.sender_id  = SERVER_ID;
+    h.flags      = 0;
+    h.sender_id  = 0;
     h.room_id    = 0;
-    h.message_id = next_message_id(message_id);
-    h.timestamp  = (uint64_t)time(NULL);
+    h.timestamp  = 0;
+    h.message_id = 0;
+    h.type       = pkt_type;
 
-    if (enqueue_packet(c, &h, payload, sizeof(payload)) < 0)
+    if (enqueue_packet(c, &h, (const uint8_t*)user_name, name_len) < 0)
     {
         fprintf(stderr, "enqueue_packet failed\n");
         return -1;
     }
+
+    if (set_epollout_to_client(epfd, c) < 0)
+    {
+        return -1;
+    }
+
+    memset(c->name, 0, sizeof(c->name));
+    memcpy(c->name, user_name, name_len);
+    c->name[name_len] = '\0';
+
+    if (pkt_type == PKT_REGISTER_BEGIN)
+    {
+        c->state = STATE_WAIT_REGISTER_CHALLENGE;
+    }
+    else if (pkt_type == PKT_NAME)
+    {
+        c->state = STATE_WAIT_AUTH_CHALLENGE;
+    }
+
+    return 0;
+}
+
+void print_help(Client* c)
+{
+    if (!c || c->state != STATE_READY)
+    {
+        printf("Commands before login:\n");
+        printf("  /help\n");
+        printf("  /register NAME\n");
+        printf("  /login NAME\n");
+        printf("\n");
+        printf("You are not in chat yet. Plain text will not be sent.\n");
+        return;
+    }
+
+    printf("Commands:\n");
+    printf("  /help\n");
+    printf("  /join ROOM_ID\n");
+    printf("\n");
+    printf("Plain text is sent to the current room.\n");
+}
+
+// 0 некритичная ошибка, клиент может продолжат работу
+// -1 критичная ошибка, закрыть клиент
+int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, char* out_buf,
+                 ssize_t bytes, const char* default_name, int* registration_in_progress,
+                 int* generated_keys_for_registration)
+{
+    Header h;
+    memset(&h, 0, sizeof(h));
+
+    h.version    = 1;
+    h.flags      = 0;
+    h.sender_id  = 0;
+    h.room_id    = 0;
+    h.timestamp  = 0;
+    h.message_id = 0;
+
+    if (bytes == 0)
+    {
+        return 0;
+    }
+    if (strcmp(out_buf, "/help") == 0)
+    {
+        print_help(c);
+        return 0;
+    }
+
+    if (c->state == STATE_WAIT_NAME)
+    {
+        if (strncmp(out_buf, "/register ", 10) == 0)
+        {
+            const char* reg_name = out_buf + 10;
+
+            if (reg_name[0] == '\0')
+            {
+                printf("[ERROR] Usage: /register NAME\n");
+                return 0;
+            }
+
+            if (strlen(reg_name) > MAX_NAME_LEN)
+            {
+                printf("[ERROR] NAME IS TOO LONG\n");
+                return 0;
+            }
+
+            clear_generated_keys(gk);
+
+            if (keys_exist(reg_name) == 1)
+            {
+                if (load_keys_for_name(gk, reg_name) < 0)
+                {
+                    printf("[ERROR] Failed to load local keys for '%s'\n", reg_name);
+                    return 0;
+                }
+
+                *generated_keys_for_registration = 0;
+            }
+            else
+            {
+                gk->identity_private = NULL;
+                gk->vko_private      = NULL;
+
+                *generated_keys_for_registration = 0;
+            }
+
+            *registration_in_progress = 1;
+
+            return send_name_command(epfd, c, PKT_REGISTER_BEGIN, reg_name);
+        }
+
+        if (strcmp(out_buf, "/register") == 0)
+        {
+            if (strlen(default_name) > MAX_NAME_LEN)
+            {
+                printf("[ERROR] NAME IS TOO LONG\n");
+                return 0;
+            }
+
+            clear_generated_keys(gk);
+
+            if (keys_exist(default_name) == 1)
+            {
+                if (load_keys_for_name(gk, default_name) < 0)
+                {
+                    printf("[ERROR] Failed to load local keys for '%s'\n", default_name);
+                    return 0;
+                }
+
+                *generated_keys_for_registration = 0;
+            }
+
+            *registration_in_progress = 1;
+
+            return send_name_command(epfd, c, PKT_REGISTER_BEGIN, default_name);
+        }
+
+        if (strncmp(out_buf, "/login ", 7) == 0)
+        {
+            const char* login_name = out_buf + 7;
+
+            if (login_name[0] == '\0')
+            {
+                printf("[ERROR] Usage: /login NAME\n");
+                return 0;
+            }
+
+            if (strlen(login_name) > MAX_NAME_LEN)
+            {
+                printf("[ERROR] NAME IS TOO LONG\n");
+                return 0;
+            }
+
+            if (keys_exist(login_name) != 1)
+            {
+                printf("[ERROR] No local keys for '%s'. Use /register %s first.\n", login_name,
+                       login_name);
+                return 0;
+            }
+
+            if (load_keys_for_name(gk, login_name) < 0)
+            {
+                printf("[ERROR] Failed to load local keys for '%s'\n", login_name);
+                return 0;
+            }
+
+            *registration_in_progress        = 0;
+            *generated_keys_for_registration = 0;
+
+            return send_name_command(epfd, c, PKT_NAME, login_name);
+        }
+
+        if (strcmp(out_buf, "/login") == 0)
+        {
+            if (keys_exist(default_name) != 1)
+            {
+                printf("[ERROR] No local keys for '%s'. Use /register %s first.\n", default_name,
+                       default_name);
+                return 0;
+            }
+
+            if (load_keys_for_name(gk, default_name) < 0)
+            {
+                printf("[ERROR] Failed to load local keys for '%s'\n", default_name);
+                return 0;
+            }
+
+            *registration_in_progress        = 0;
+            *generated_keys_for_registration = 0;
+
+            return send_name_command(epfd, c, PKT_NAME, default_name);
+        }
+
+        if (out_buf[0] == '/')
+        {
+            printf("[ERROR] Unknown command: %s\n", out_buf);
+            printf("[LOCAL] Type /help to see supported commands.\n");
+            return 0;
+        }
+
+        printf("[LOCAL] Message was not sent. You are not logged in.\n");
+        printf("[LOCAL] Use '/login NAME' or '/register NAME'.\n");
+        printf("[LOCAL] Use '/login' or '/register' to use your %s.\n", default_name);
+        return 0;
+    }
+
+    if (c->state != STATE_READY)
+    {
+        if (out_buf[0] == '/')
+        {
+            printf("[LOCAL] Command cannot be used right now. Waiting for server response.\n");
+        }
+        else
+        {
+            printf("[LOCAL] Message was not sent. You are not ready yet.\n");
+        }
+
+        return 0;
+    }
+
+    if (c->state == STATE_READY)
+    {
+        if (bytes == 0)
+        {
+            return 0;
+        }
+        if (bytes > PAYLOAD_SIZE)
+        {
+            printf("[ERROR] MESSAGE TOO LONG\n");
+            return 0;
+        }
+        if (strncmp("/join ", out_buf, 6) == 0)
+        {
+            errno = 0;
+            char*         end;
+            unsigned long room = strtoul(out_buf + 6, &end, 0);
+            if (*end != '\0')
+            {
+                printf("[ERROR] INVALID ROOM ID\n");
+                return 0;
+            }
+            if (end == out_buf + 6)
+            {
+                printf("[ERROR] ROOM ID IS NOT A NUMBER\n");
+                return 0;
+            }
+            if (errno == ERANGE)
+            {
+                printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
+                return 0;
+            }
+            if (room == 0 || room > MAX_ROOMS)
+            {
+                printf("[ERROR] INVALID ROOM ID\n");
+                return 0;
+            }
+
+            if ((uint32_t)room == c->room_id)
+            {
+                printf("[LOCAL] You are already in room #%" PRIu32 "\n", c->room_id);
+                return 0;
+            }
+            h.type    = PKT_ROOM_CHANGE;
+            h.room_id = (uint32_t)room;
+
+            if (enqueue_packet(c, &h, NULL, 0) < 0)
+            {
+                fprintf(stderr, "enqueue_packet failed\n");
+                return -1;
+            }
+            if (set_epollout_to_client(epfd, c) < 0)
+            {
+                return -1;
+            }
+        }
+
+        else
+        {
+            h.type            = PKT_ENC_CHAT;
+            h.room_id         = c->room_id;
+            RoomSession* room = find_room_session(rooms, MAX_ROOMS, c->room_id);
+            if (!room)
+            {
+                fprintf(stderr, "[E2E] no room key for room#%" PRIu32 "\n", c->room_id);
+                return 0;
+            }
+            if (bytes < 0 || bytes > UINT16_MAX)
+            {
+                fprintf(stderr, "message is too large\n");
+                return -1;
+            }
+            if (client_send_pkt_enc_chat(epfd, c, room, (uint8_t*)out_buf, (uint16_t)bytes) < 0)
+            {
+                fprintf(stderr, "enqueue_packet failed\n");
+                return -1;
+            }
+            printf("[room #%" PRIu32 "] %s: %s\n", c->room_id, c->name, out_buf);
+            if (set_epollout_to_client(epfd, c) < 0)
+            {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+// void remove_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id)
+// {
+//     for (size_t i = 0; i < rooms_count; i++)
+//     {
+//         if (rooms[i].used && rooms[i].room_id == room_id)
+//         {
+//             OPENSSL_cleanse(&rooms[i], sizeof(rooms[i]));
+//             return;
+//         }
+//     }
+// }
+
+// PKT_ENC_CHAT
+// [1  enc_version]
+// [1  suite]
+// [2  reserved]
+// [8  room_epoch]
+// [8  seq]
+// [16 nonce]
+// [N  ciphertext]
+// [16 tag]
+int client_send_pkt_enc_chat(int epfd, Client* c, RoomSession* room, uint8_t* msg, uint16_t msg_len)
+{
+    if (!c || !room || !msg || msg_len > ENC_PLAINTEXT_MAX_LEN)
+    {
+        return -1;
+    }
+    int    ret            = -1;
+    Header h              = {0};
+    h.flags               = 0;
+    h.message_id          = 0;
+    h.room_id             = room->room_id;
+    h.sender_id           = c->id;
+    h.type                = PKT_ENC_CHAT;
+    h.version             = 1;
+    h.timestamp           = (uint64_t)time(NULL);
+    uint8_t* enc_msg      = NULL;
+    uint16_t enc_msg_len  = 0;
+    uint8_t* tag          = NULL;
+    uint16_t tag_len      = 0;
+    uint8_t* pkt_enc_chat = NULL;
+    uint8_t* p            = NULL;
+    uint8_t* nonce        = NULL;
+
+    if (encrypt_chat_message(room->room_key, c->id, c->room_id, room->epoch, room->send_seq, msg,
+                             msg_len, &enc_msg, &enc_msg_len, &tag, &tag_len, &nonce) < 0)
+    {
+        fprintf(stderr, "encrypt_chat_message failed\n");
+        goto cleanup;
+    }
+    if (enc_msg_len > ENC_PLAINTEXT_MAX_LEN)
+    {
+        fprintf(stderr, "enc_msg_len too large\n");
+        goto cleanup;
+    }
+    pkt_enc_chat = OPENSSL_malloc(ENC_OVERHEAD + enc_msg_len);
+    if (!pkt_enc_chat)
+    {
+        ossl_print_error("OPENSSL_malloc");
+        goto cleanup;
+    }
+    p = pkt_enc_chat;
+
+    // [1  enc_version]
+    *p++ = 1;
+    // [1  suite]
+    *p++ = 1;
+    // [2  reserved]
+    *p++ = 0;
+    *p++ = 0;
+    // [8  room_epoch]
+    put_u64_be(p, room->epoch);
+    p += 8;
+    // [8  seq]
+    put_u64_be(p, room->send_seq);
+    p += 8;
+    // [16 nonce]
+    memcpy(p, nonce, ENC_NONCE);
+    p += ENC_NONCE;
+    // [N  ciphertext]
+    memcpy(p, enc_msg, enc_msg_len);
+    p += enc_msg_len;
+    // [16 tag]
+    if (tag_len != ENC_TAG)
+    {
+        fprintf(stderr, "WRONG tag_len\n");
+        goto cleanup;
+    }
+    memcpy(p, tag, tag_len);
+    p += tag_len;
+
+    if ((uint16_t)(p - pkt_enc_chat) != ENC_OVERHEAD + enc_msg_len)
+    {
+        fprintf(stderr, "WRONG pkt_enc_chat len");
+        goto cleanup;
+    }
+
+    size_t pkt_enc_chat_len = ENC_OVERHEAD + enc_msg_len;
+
+    if (enqueue_packet(c, &h, pkt_enc_chat, pkt_enc_chat_len) < 0)
+    {
+        fprintf(stderr, "enqueue_packet failed\n");
+        goto cleanup;
+    }
     if (set_epollout_to_client(epfd, c) < 0)
     {
         fprintf(stderr, "set_epollout_to_client failed\n");
+        goto cleanup;
+    }
+    room->send_seq++;
+    ret = 0;
+cleanup:
+    OPENSSL_free(enc_msg);
+    OPENSSL_free(tag);
+    OPENSSL_free(nonce);
+    OPENSSL_free(pkt_enc_chat);
+    return ret;
+}
+
+// PKT_ENC_CHAT
+// [1  enc_version]
+// [1  suite]
+// [2  reserved]
+// [8  room_epoch]
+// [8  seq]
+// [16 nonce]
+// [N  ciphertext]
+// [16 tag]
+int client_recv_pkt_enc_chat(Client* c, Header* h, RoomSession* room, uint8_t* msg,
+                             uint16_t msg_len, uint8_t** out_msg, uint16_t* out_msg_len)
+{
+    if (!c || !h || !room || !msg || !out_msg || msg_len < ENC_OVERHEAD || msg_len > PAYLOAD_SIZE)
+    {
         return -1;
     }
-    return 0;
+    int      ret         = -1;
+    uint8_t* p           = NULL;
+    size_t   off         = 0;
+    p                    = msg;
+    uint8_t  enc_version = 0;
+    uint8_t  suite       = 0;
+    uint64_t room_epoch  = 0;
+    uint64_t seq         = 0;
+    uint8_t  nonce[ENC_NONCE];
+    memset(nonce, 0, ENC_NONCE);
+    uint8_t* ciphertext     = NULL;
+    uint16_t ciphertext_len = msg_len - ENC_OVERHEAD;
+    uint8_t* tag            = NULL;
+    uint16_t tag_len        = ENC_TAG;
+    *out_msg                = NULL;
+    *out_msg_len            = 0;
+
+    // [1  enc_version]
+    enc_version = *(p + off);
+    if (enc_version != 1)
+    {
+        goto cleanup;
+    }
+    off += 1;
+
+    // [1  suite]
+    suite = *(p + off);
+    if (suite != 1)
+    {
+        goto cleanup;
+    }
+    off += 1;
+    // [2  reserved]
+    off += 2;
+
+    // [8  room_epoch]
+    room_epoch = get_u64_be(p + off);
+    off += 8;
+
+    if (room_epoch != room->epoch)
+    {
+        fprintf(stderr, "room_epoch mismatch\n");
+        goto cleanup;
+    }
+
+    // [8  seq]
+    seq = get_u64_be(p + off);
+    off += 8;
+
+    // [16 nonce]
+    memcpy(nonce, p + off, ENC_NONCE);
+    off += ENC_NONCE;
+
+    // [N  ciphertext]
+    ciphertext = p + off;
+    off += ciphertext_len;
+
+    // [16 tag]
+    tag = p + off;
+    off += tag_len;
+
+    if (off != msg_len)
+    {
+        fprintf(stderr, "msg_len mismatch\n");
+        goto cleanup;
+    }
+
+    if (decrypt_chat_message(nonce, room->room_key, h->sender_id, h->room_id, room_epoch, seq,
+                             ciphertext, ciphertext_len, tag, out_msg, out_msg_len) < 0)
+    {
+        fprintf(stderr, "decrypt_chat_message failed\n");
+        goto cleanup;
+    }
+
+    if (check_recv_seq(room, h->sender_id, seq) < 0)
+    {
+        fprintf(stderr, "replay detected\n");
+        goto cleanup;
+    }
+
+    ret = 0;
+cleanup:
+    if (ret != 0)
+    {
+        OPENSSL_free(*out_msg);
+        *out_msg     = NULL;
+        *out_msg_len = 0;
+    }
+    return ret;
+}
+
+int client_response_challenge(int epfd, Client* c, uint8_t* msg, uint16_t msg_len,
+                              EVP_PKEY* private_key)
+{
+    if (!msg || !private_key)
+    {
+        return -1;
+    }
+    int      ret     = -1;
+    uint8_t* out     = NULL;
+    size_t   out_len = 0;
+    if (get_sign_challenge(c->id, c->name, msg, msg_len, private_key, &out, &out_len) < 0)
+    {
+        fprintf(stderr, "get_sign_challenge failed\n");
+        goto cleanup;
+    }
+    Header h     = {0};
+    h.flags      = 0;
+    h.message_id = 0;
+    h.room_id    = 0;
+    h.sender_id  = c->id;
+    h.timestamp  = (uint64_t)time(NULL);
+    h.type       = PKT_AUTH_RESPONSE;
+    h.version    = 1;
+
+    if (enqueue_packet(c, &h, out, out_len) < 0)
+    {
+        fprintf(stderr, "enqueue_packet failed\n");
+        goto cleanup;
+    }
+    if (set_epollout_to_client(epfd, c) < 0)
+    {
+        fprintf(stderr, "set_epollout_to_client failed\n");
+        goto cleanup;
+    }
+    ret = 0;
+cleanup:
+    OPENSSL_free(out);
+    return ret;
 }
