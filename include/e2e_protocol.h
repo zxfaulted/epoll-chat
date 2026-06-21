@@ -3,10 +3,17 @@
 
 #include "protocol.h"
 
-#define ROOM_SALT_LEN 32
+#define MIN_PASSWORD_LEN 4
+#define MAX_PASSWORD_LEN 128
+
+#define ROOM_SALT_LEN 16
+#define ROOM_NONCE_LEN 32
 #define ROOM_PASS_KEY_LEN 32
 #define MAX_CLIENTS 1024
 #define ROOM_KEY_LEN 32
+#define ROOM_TAG_LEN 16
+#define ENCRYPTED_ROOM_KEY_LEN ROOM_KEY_LEN
+#define PASSWORD_KEY_LEN 32
 
 // PKT_ENC_CHAT
 // [1  enc_version]
@@ -45,7 +52,7 @@
 // [16 nonce]
 // [16 tag]
 // [32 encrypted_room_key]
-#define PKT_ENC_ROOM_KEY_NONCE_LEN 16
+#define PKT_ENC_ROOM_KEY_NONCE_LEN 32
 #define PKT_ENC_ROOM_KEY_TAG_LEN 16
 #define PKT_ENC_ROOM_KEY_CIPHERTEXT_LEN ROOM_KEY_LEN
 #define PKT_ENC_ROOM_KEY_PAYLOAD_LEN                                                               \

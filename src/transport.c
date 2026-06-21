@@ -316,3 +316,8 @@ int unset_epollout_to_client(int epfd, Client* c)
     }
     return 0;
 }
+
+uint32_t next_message_id(uint32_t* message_id)
+{
+    return ++(*message_id);
+}

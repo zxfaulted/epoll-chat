@@ -52,7 +52,7 @@ const char* packet_state_str(PacketState st);
 // 0 успех
 // -1 ошибка
 int         set_client_name(Client* c, const char* msg, size_t msg_len);
-PacketState validate_packet_name(uint32_t msg_len, Header* h);
+PacketState validate_packet_begin(uint32_t msg_len, Header* h);
 PacketState validate_packet_chat(uint32_t msg_len, Header* h);
 int         is_name_taken(Client* clients[], int clients_count, const char* name, size_t name_len);
 int         disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count,
@@ -70,8 +70,6 @@ int payload_to_str(const uint8_t payload[], size_t len, char out[], size_t out_c
 // -1 ошибка
 int send_server_user_event(Client* c, uint32_t room_id, PacketType type, const char* name,
                            uint32_t user_id, uint32_t* message_id);
-
-uint32_t next_message_id(uint32_t* message_id);
 
 PacketState validate_packet_room_change(uint32_t msg_len, Header* h);
 int         send_server_register_ok(Client* c, uint32_t room_id, const char* name, uint32_t user_id,
@@ -91,6 +89,7 @@ int client_send_pkt_enc_chat(int epfd, Client* c, RoomSession* room, uint8_t* ms
 int client_response_challenge(int epfd, Client* c, uint8_t* msg, uint16_t msg_len,
                               EVP_PKEY* private_key);
 int send_room_key_to_peer(Client* c, uint32_t peer_id, uint8_t* wrapping_key, RoomSession* room);
-Client* find_client(Client* clients[], int clients_count, uint32_t client_id);
+Client*  find_client(Client* clients[], int clients_count, uint32_t client_id);
+uint32_t clients_leader_id(Client** clients, int clients_count, uint32_t room_id);
 
 #endif

@@ -1,7 +1,9 @@
 #include "net.h"
 #include "auth.h"
+#include "client_send.h"
 #include "crypto.h"
 #include "room.h"
+#include "room_password.h"
 #include "transport.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -25,11 +27,6 @@
 //     }
 //     return i;
 // }
-
-uint32_t next_message_id(uint32_t* message_id)
-{
-    return ++(*message_id);
-}
 
 int payload_to_str(const uint8_t payload[], size_t len, char out[], size_t out_cap)
 {
@@ -75,13 +72,13 @@ void reject_packet(int epfd, Client* c, int cur_fd, Client* clients[], int* clie
     disconnect_client(epfd, c, clients, clients_count, message_id);
 }
 
-PacketState validate_packet_name(uint32_t msg_len, Header* h)
+PacketState validate_packet_begin(uint32_t msg_len, Header* h)
 {
     if (h->version != 1)
     {
         return PKT_BAD_VERSION;
     }
-    if (h->type != PKT_NAME && h->type != PKT_REGISTER_BEGIN)
+    if (h->type != PKT_AUTH_BEGIN && h->type != PKT_REGISTER_BEGIN)
     {
         return PKT_BAD_TYPE;
     }
@@ -223,13 +220,13 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
             return -1;
         }
         memset(new_client, 0, sizeof(Client));
-        new_client->id      = (*client_id)++;
-        new_client->sa      = new_client_sa;
-        new_client->ei.item = CLIENT_ITEM;
-        new_client->ei.fd   = new_client_fd;
-        new_client->state   = STATE_WAIT_NAME;
-        new_client->name[0] = '\0';
-        new_client->room_id = 1;
+        new_client->id         = (*client_id)++;
+        new_client->sa         = new_client_sa;
+        new_client->ei.item    = CLIENT_ITEM;
+        new_client->ei.fd      = new_client_fd;
+        new_client->auth_state = AUTH_NEW;
+        new_client->name[0]    = '\0';
+        new_client->room_id    = 1;
 
         struct epoll_event ev;
         ev.events   = EPOLLIN | EPOLLHUP | EPOLLRDHUP;
@@ -246,6 +243,31 @@ int add_new_client(int epfd, int server_fd, Client* clients[], int* clients_coun
 
         printf("[CONNECT] Client #%" PRIu32 "\n", new_client->id);
     }
+}
+
+uint32_t clients_leader_id(Client** clients, int clients_count, uint32_t room_id)
+{
+    if (!clients)
+    {
+        return 0;
+    }
+    uint32_t leader_id = 0;
+    for (int i = 0; i < clients_count; ++i)
+    {
+        if (clients[i]->room_id != room_id)
+        {
+            continue;
+        }
+        if (clients[i]->auth_state != AUTH_READY || clients[i]->room_state != ROOM_READY)
+        {
+            continue;
+        }
+        if (clients[i]->id < leader_id || leader_id == 0)
+        {
+            leader_id = clients[i]->id;
+        }
+    }
+    return leader_id;
 }
 
 int set_client_name(Client* c, const char* msg, size_t msg_len)
@@ -265,7 +287,7 @@ int is_name_taken(Client* clients[], int clients_count, const char* name, size_t
 {
     for (int i = 0; i < clients_count; i++)
     {
-        if ((clients[i] && clients[i]->state == STATE_READY) &&
+        if ((clients[i] && clients[i]->auth_state == AUTH_READY) &&
             (strlen(clients[i]->name) == name_len) &&
             (memcmp(clients[i]->name, name, name_len) == 0))
         {
@@ -288,7 +310,7 @@ void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* c
             continue;
         }
 
-        if (clients[i]->state != STATE_READY)
+        if (clients[i]->room_state != ROOM_READY)
         {
             i++;
             continue;
@@ -414,7 +436,7 @@ void broadcast_user_event(int epfd, Client* skip, uint32_t room_id, Client* clie
             continue;
         }
 
-        if (clients[i]->state != STATE_READY)
+        if (clients[i]->room_state != ROOM_READY)
         {
             i++;
             continue;
@@ -448,34 +470,11 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
     {
         return -1;
     }
-    if (c->state == STATE_READY && c->name[0] != '\0')
+    if (c->room_state == ROOM_READY && c->name[0] != '\0')
     {
         broadcast_user_event(epfd, c, c->room_id, clients, clients_count, PKT_LEAVE, message_id);
     }
     remove_client(epfd, c->ei.fd, clients, clients_count);
-    return 0;
-}
-
-int send_server_error(int epfd, Client* c, const char msg[], uint32_t* message_id)
-{
-    Header h;
-    memset(&h, 0, sizeof(h));
-    h.version    = 1;
-    h.flags      = 0;
-    h.message_id = next_message_id(message_id);
-    h.type       = PKT_ERR;
-    h.room_id    = 0;
-    h.sender_id  = 0;
-    h.timestamp  = (uint64_t)time(NULL);
-
-    if (enqueue_packet(c, &h, (const uint8_t*)msg, (uint32_t)strlen(msg)) < 0)
-    {
-        return -1;
-    }
-    if (set_epollout_to_client(epfd, c) < 0)
-    {
-        return -1;
-    }
     return 0;
 }
 
@@ -543,7 +542,7 @@ int send_server_ready_users(Client* c, uint32_t room_id, Client* clients[], int 
     }
     for (int i = 0; i < clients_count; i++)
     {
-        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
+        if (clients[i] && clients[i]->room_state == ROOM_READY && c != clients[i] &&
             clients[i]->room_id == room_id)
         {
             if (send_server_user_event(c, room_id, PKT_JOIN, clients[i]->name, clients[i]->id,
@@ -582,7 +581,7 @@ int client_send_pkt_register_commit(int epfd, Client* c, uint8_t* identity_pub_d
     h.room_id    = c->room_id;
     h.sender_id  = c->id;
     h.timestamp  = (uint64_t)time(NULL);
-    h.type       = PKT_REGISTER_COMMIT;
+    h.type       = PKT_REGISTER_RESPONSE;
     h.version    = 1;
 
     uint32_t out_buf_len = 2 + identity_pub_der_len + 2 + siglen;
@@ -663,11 +662,11 @@ int send_name_command(int epfd, Client* c, uint8_t pkt_type, const char* user_na
 
     if (pkt_type == PKT_REGISTER_BEGIN)
     {
-        c->state = STATE_WAIT_REGISTER_CHALLENGE;
+        c->auth_state = AUTH_CLIENT_WAIT_REGISTER_CHALLENGE;
     }
-    else if (pkt_type == PKT_NAME)
+    else if (pkt_type == PKT_AUTH_BEGIN)
     {
-        c->state = STATE_WAIT_AUTH_CHALLENGE;
+        c->auth_state = AUTH_CLIENT_WAIT_AUTH_CHALLENGE;
     }
 
     return 0;
@@ -675,7 +674,7 @@ int send_name_command(int epfd, Client* c, uint8_t pkt_type, const char* user_na
 
 void print_help(Client* c)
 {
-    if (!c || c->state != STATE_READY)
+    if (!c || c->auth_state != AUTH_READY)
     {
         printf("Commands before login:\n");
         printf("  /help\n");
@@ -719,7 +718,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
         return 0;
     }
 
-    if (c->state == STATE_WAIT_NAME)
+    if (c->auth_state == AUTH_NEW)
     {
         if (strncmp(out_buf, "/register ", 10) == 0)
         {
@@ -820,7 +819,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
             *registration_in_progress        = 0;
             *generated_keys_for_registration = 0;
 
-            return send_name_command(epfd, c, PKT_NAME, login_name);
+            return send_name_command(epfd, c, PKT_AUTH_BEGIN, login_name);
         }
 
         if (strcmp(out_buf, "/login") == 0)
@@ -841,7 +840,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
             *registration_in_progress        = 0;
             *generated_keys_for_registration = 0;
 
-            return send_name_command(epfd, c, PKT_NAME, default_name);
+            return send_name_command(epfd, c, PKT_AUTH_BEGIN, default_name);
         }
 
         if (out_buf[0] == '/')
@@ -857,7 +856,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
         return 0;
     }
 
-    if (c->state != STATE_READY)
+    if (c->auth_state != AUTH_READY)
     {
         if (out_buf[0] == '/')
         {
@@ -871,7 +870,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
         return 0;
     }
 
-    if (c->state == STATE_READY)
+    if (c->auth_state == AUTH_READY)
     {
         if (bytes == 0)
         {
@@ -886,7 +885,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
         {
             errno = 0;
             char*         end;
-            unsigned long room = strtoul(out_buf + 6, &end, 0);
+            unsigned long room_id = strtoul(out_buf + 6, &end, 0);
             if (*end != '\0')
             {
                 printf("[ERROR] INVALID ROOM ID\n");
@@ -902,31 +901,87 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
                 printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
                 return 0;
             }
-            if (room == 0 || room > MAX_ROOMS)
+            if (room_id < 1 || room_id > MAX_ROOMS)
             {
                 printf("[ERROR] INVALID ROOM ID\n");
                 return 0;
             }
 
-            if ((uint32_t)room == c->room_id)
+            if ((uint32_t)room_id == c->room_id)
             {
                 printf("[LOCAL] You are already in room #%" PRIu32 "\n", c->room_id);
                 return 0;
             }
-            h.type    = PKT_ROOM_CHANGE;
-            h.room_id = (uint32_t)room;
-
-            if (enqueue_packet(c, &h, NULL, 0) < 0)
-            {
-                fprintf(stderr, "enqueue_packet failed\n");
-                return -1;
-            }
-            if (set_epollout_to_client(epfd, c) < 0)
+            if (client_send_pkt_room_join_begin(epfd, c, room_id) < 0)
             {
                 return -1;
             }
+            c->room_state = ROOM_JOINING;
+            return 0;
         }
 
+        else if (strncmp(out_buf, "/create_room_password", 21) == 0)
+        {
+            uint32_t room_id;
+            char     password[128];
+            int n = sscanf(out_buf, "/create_room_password %" PRIu32 " %127s", &room_id, password);
+            if (n != 2)
+            {
+                printf("[ERROR] NUMBER OF ARGUMENTS MUST BE 2\n");
+                return 0;
+            }
+            if (room_id < 1 || room_id > MAX_ROOMS)
+            {
+                printf("[ERROR] ROOM ID IS OUT OF RANGE: %" PRIu32 "\n", room_id);
+                return 0;
+            }
+            size_t password_len = strlen(password);
+            if (password_len > MAX_PASSWORD_LEN)
+            {
+                fprintf(stderr, "MAXIMUM PASSWORD LENGTH IS 128 SYMBOLS\n");
+                return 0;
+            }
+            if (password_len < MIN_PASSWORD_LEN)
+            {
+                fprintf(stderr, "MINIMUM PASSWORD LENGTH IS 4 SYMBOLS\n");
+                return 0;
+            }
+            uint8_t room_key[ROOM_KEY_LEN];
+            if (RAND_bytes(room_key, ROOM_KEY_LEN) != 1)
+            {
+                ossl_print_error("RAND_BYTES");
+                return -1;
+            }
+            // if (save_room_session(rooms, MAX_ROOMS, room_id, 1, room_key) < 0)
+            // {
+            //     fprintf(stderr, "save_room_session failed\n");
+            //     return -1;
+            // }
+
+            int ret = -1;
+            ret     = client_send_pkt_room_create_password(epfd, c, room_id, password, room_key);
+            OPENSSL_cleanse(room_key, ROOM_KEY_LEN);
+            return ret;
+        }
+
+        else if (strncmp(out_buf, "/create_room", 12) == 0)
+        {
+            const char* p_room_id = out_buf + 13;
+            uint32_t    room_id   = atoi(p_room_id);
+            if (room_id < 1 || room_id > MAX_ROOMS)
+            {
+                printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
+                return 0;
+            }
+            return client_send_pkt_room_create(epfd, c, room_id);
+        }
+
+        else if (out_buf[0] == '/')
+        {
+            printf("[ERROR] Unknown command: %s\n", out_buf);
+            printf("[LOCAL] Type /help to see supported commands.\n");
+            return 0;
+        }
         else
         {
             h.type            = PKT_ENC_CHAT;
@@ -1140,6 +1195,13 @@ int client_recv_pkt_enc_chat(Client* c, Header* h, RoomSession* room, uint8_t* m
     // [8  seq]
     seq = get_u64_be(p + off);
     off += 8;
+
+    uint32_t last_seen_seq = room->recv[h->sender_id].peer_id;
+    if (seq <= last_seen_seq)
+    {
+        fprintf(stderr, "old seq\n");
+        goto cleanup;
+    }
 
     // [16 nonce]
     memcpy(nonce, p + off, ENC_NONCE);

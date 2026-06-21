@@ -19,11 +19,16 @@ typedef struct RoomSession
     uint32_t room_id;
     uint32_t owner_id;
 
-    int     has_pass_key;
-    uint8_t room_pass_key[ROOM_PASS_KEY_LEN];
-
+    int      has_key;
     uint64_t epoch;
     uint8_t  room_key[ROOM_KEY_LEN];
+
+    int has_password;
+
+    int     has_passsword_wrap_keys;
+    uint8_t enc_key[PASSWORD_KEY_LEN];
+    uint8_t mac_key[PASSWORD_KEY_LEN];
+    uint8_t salt[ROOM_SALT_LEN];
 
     uint64_t send_seq;
 
@@ -36,6 +41,10 @@ RoomSession* find_room_session(RoomSession* rooms, size_t rooms_count, uint32_t 
 int          create_room_key(RoomSession* rooms, size_t count, uint32_t room_id);
 int save_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id, uint64_t epoch,
                       uint8_t room_key[ROOM_KEY_LEN]);
+int save_password_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id,
+                               uint8_t enc_key[PASSWORD_KEY_LEN], uint8_t mac_key[PASSWORD_KEY_LEN],
+                               uint8_t salt[ROOM_SALT_LEN], uint64_t epoch,
+                               uint8_t room_key[ROOM_KEY_LEN]);
 RoomSession* get_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id);
 uint64_t     get_room_epoch(RoomSession* room);
 int rekey_current_room_as_leader(int epfd, Client* c, PeerWrapSession* peers, size_t peers_count,
@@ -51,4 +60,7 @@ int forward_room_key_packet(int epfd, Client* clients[], int clients_count, Clie
 int handle_room_key(Client* c, PeerWrapSession* peers, RoomSession* rooms, Header* h, uint8_t* msg,
                     uint16_t msg_len);
 int check_recv_seq(RoomSession* room, uint64_t peer_id, uint64_t recv_seq);
+int rekey_current_room_auto(int epfd, Client* c, PeerWrapSession* peers, uint16_t peers_count,
+                            RoomSession* rooms, uint16_t rooms_count, UserEntry* ue,
+                            uint32_t room_id);
 #endif // ROOM_H

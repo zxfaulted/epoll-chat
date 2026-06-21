@@ -1,36 +1,44 @@
 #include "room_join.h"
+#include "room.h"
+#include "wire.h"
 #include <string.h>
 #include <time.h>
 
-int client_send_pkt_room_join_begin(int epfd, Client* c, uint32_t room_id,
-                                    char password[MAX_PASSWORD_LEN])
+int build_pkt_join_begin_payload(uint8_t* out_msg, uint16_t* out_msg_len, uint32_t room_id)
 {
-    if (!c || !password)
+    if (!out_msg || !out_msg_len)
     {
         return -1;
     }
 
-    Header h;
-    memset(&h, 0, sizeof(h));
-    h.flags      = 0;
-    h.message_id = 0;
-    h.room_id    = c->room_id;
-    h.sender_id  = c->id;
-    h.timestamp  = (uint64_t)time(NULL);
-    h.type       = PKT_ROOM_JOIN_BEGIN;
-    h.version    = 1;
-
-    uint8_t  msg     = room_id;
-    uint32_t msg_len = ROOM_ID_LEN;
-
-    if (enqueue_packet(c, &h, &msg, msg_len) < 0)
-    {
-        return -1;
-    }
-    if (set_epollout_to_client(epfd, c) < 0)
-    {
-        return -1;
-    }
+    put_u32_be(out_msg, room_id);
+    *out_msg_len = ROOM_ID_LEN;
 
     return 0;
+}
+
+int parse_pkt_join_begin_payload(uint8_t* msg, uint16_t msg_len, uint32_t* out_room_id)
+{
+    if (!msg || !out_room_id)
+    {
+        return -1;
+    }
+    if (msg_len != ROOM_ID_LEN)
+    {
+        return -1;
+    }
+    *out_room_id = get_u32_be(msg);
+    return 0;
+}
+
+int validate_room_join(RoomSession* rooms, uint32_t room_id)
+{
+    if (!find_room_session(rooms, MAX_ROOMS, room_id))
+    {
+        return -1;
+    }
+    else
+    {
+        return 0;
+    }
 }

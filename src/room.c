@@ -1,4 +1,5 @@
 #include "room.h"
+#include "client_send.h"
 #include "crypto.h"
 #include "e2e_message.h"
 #include "net.h"
@@ -84,6 +85,72 @@ int save_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id, 
     slot->used     = 1;
     return 0;
 }
+int save_password_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id,
+                               uint8_t enc_key[PASSWORD_KEY_LEN], uint8_t mac_key[PASSWORD_KEY_LEN],
+                               uint8_t salt[ROOM_SALT_LEN], uint64_t epoch,
+                               uint8_t room_key[ROOM_KEY_LEN])
+{
+    if (!rooms || !room_key)
+    {
+        return -1;
+    }
+    RoomSession* slot = NULL;
+
+    for (size_t i = 0; i < rooms_count; i++)
+    {
+        if (rooms[i].used && rooms[i].room_id == room_id)
+        {
+            if (rooms[i].epoch > epoch)
+            {
+                return -1;
+            }
+            else if (rooms[i].epoch == epoch)
+            {
+                if (memcmp(rooms[i].room_key, room_key, ROOM_KEY_LEN) != 0)
+                {
+                    fprintf(stderr, "same epoch but wrong key\n");
+                    return -1;
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+            else
+            {
+                slot = &rooms[i];
+                break;
+            }
+        }
+    }
+    if (!slot)
+    {
+        for (size_t i = 0; i < rooms_count; i++)
+        {
+            if (!rooms[i].used)
+            {
+                slot = &rooms[i];
+                break;
+            }
+        }
+    }
+    if (!slot)
+    {
+        return -1;
+    }
+    OPENSSL_cleanse(slot, sizeof(*slot));
+    slot->room_id = room_id;
+    slot->epoch   = epoch;
+    memcpy(slot->room_key, room_key, ROOM_KEY_LEN);
+    slot->send_seq                = 1;
+    slot->used                    = 1;
+    slot->has_password            = 1;
+    slot->has_passsword_wrap_keys = 1;
+    memcpy(slot->enc_key, enc_key, PASSWORD_KEY_LEN);
+    memcpy(slot->mac_key, mac_key, PASSWORD_KEY_LEN);
+    memcpy(slot->salt, salt, ROOM_SALT_LEN);
+    return 0;
+}
 
 uint32_t room_leader_id(const Client* c, const UserEntry* ue)
 {
@@ -166,7 +233,7 @@ int rekey_current_room(int epfd, Client* c, PeerWrapSession* peers, size_t peers
     if (room_has_peers(ue) && !get_room_session(rooms, rooms_count, c->room_id))
     {
         fprintf(stderr, "[E2E] no old room key; cannot rekey safely\n");
-        c->state = STATE_WAIT_ROOM_KEY;
+        c->room_state = ROOM_WAIT_ROOM_KEY;
         return 0;
     }
 
@@ -181,7 +248,7 @@ int rekey_current_room(int epfd, Client* c, PeerWrapSession* peers, size_t peers
         return -1;
     }
 
-    c->state = STATE_READY;
+    c->room_state = ROOM_READY;
     return 0;
 }
 
@@ -226,6 +293,11 @@ int send_room_key_to_known_peers(int epfd, Client* c, PeerWrapSession* peers, si
     for (int i = 0; i < MAX_CLIENTS; i++)
     {
         if (!ue[i].used)
+        {
+            continue;
+        }
+
+        if (ue[i].id == c->id)
         {
             continue;
         }
@@ -330,7 +402,7 @@ int send_room_key_to_peer(Client* c, uint32_t peer_id, uint8_t* wrapping_key, Ro
     }
 
     if (kuznechik_encrypt_room_key(nonce, enc_key, room->room_key, ROOM_KEY_LEN, mac_key, aad,
-                                   &cipher, &cipher_len, &tag, &tag_len) < 0)
+                                   sizeof(aad), &cipher, &cipher_len, &tag, &tag_len) < 0)
     {
         fprintf(stderr, "kuznechik_encrypt_room_key failed\n");
         goto cleanup;
@@ -525,8 +597,8 @@ int handle_room_key(Client* c, PeerWrapSession* peers, RoomSession* rooms, Heade
     }
 
     if (kuznechik_decrypt_room_key(nonce, enc_key, ciphertext, PKT_ENC_ROOM_KEY_CIPHERTEXT_LEN,
-                                   mac_key, aad, &decrypted_room_key, &decrypted_room_key_len, tag,
-                                   PKT_ENC_ROOM_KEY_TAG_LEN) < 0 ||
+                                   mac_key, aad, sizeof(aad), &decrypted_room_key,
+                                   &decrypted_room_key_len, tag, PKT_ENC_ROOM_KEY_TAG_LEN) < 0 ||
         !decrypted_room_key)
     {
         fprintf(stderr, "kuznechik_decrypt_room_key failed\n");
@@ -552,6 +624,11 @@ int handle_room_key(Client* c, PeerWrapSession* peers, RoomSession* rooms, Heade
         }
 
         fprintf(stderr, "same epoch but different room key\n");
+        goto cleanup;
+    }
+    else if (old_room && old_room->epoch > epoch)
+    {
+        fprintf(stderr, "old epoch\n");
         goto cleanup;
     }
     if (save_room_session(rooms, MAX_ROOMS, h->room_id, epoch, decrypted_room_key) < 0)
@@ -617,4 +694,86 @@ int check_recv_seq(RoomSession* room, uint64_t peer_id, uint64_t recv_seq)
     }
     slot->seq = recv_seq;
     return 0;
+}
+
+int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uint16_t peers_count,
+                                RoomSession* rooms, uint16_t rooms_count, UserEntry* ue,
+                                uint32_t room_id)
+{
+    RoomSession* room = find_room_session(rooms, rooms_count, room_id);
+    if (!room)
+    {
+        return -1;
+    }
+
+    uint64_t new_epoch = room->epoch + 1;
+
+    uint8_t new_room_key[ROOM_KEY_LEN];
+    memset(new_room_key, 0, ROOM_KEY_LEN);
+    if (RAND_bytes(new_room_key, ROOM_KEY_LEN) != 1)
+    {
+        ossl_print_error("RAND_bytes");
+        return -1;
+    }
+
+    RoomPasswordInfo rpi;
+    memset(&rpi, 0, sizeof(rpi));
+    memcpy(rpi.salt, room->salt, ROOM_SALT_LEN);
+
+    uint8_t nonce[ROOM_NONCE_LEN];
+    memset(nonce, 0, ROOM_NONCE_LEN);
+    if (RAND_bytes(nonce, ROOM_NONCE_LEN) != 1)
+    {
+        ossl_print_error("RAND_bytes");
+        return -1;
+    }
+    memcpy(&rpi.salt, room->salt, ROOM_SALT_LEN);
+    memcpy(&rpi.nonce, nonce, ROOM_NONCE_LEN);
+    rpi.epoch = new_epoch;
+
+    if (encrypt_room_key_with_password_keys(room_id, room->enc_key, room->mac_key, new_room_key,
+                                            &rpi) < 0)
+    {
+        fprintf(stderr, "encrypt_room_key_with_password_keys\n");
+        return -1;
+    }
+
+    if (save_password_room_session(rooms, rooms_count, room_id, room->enc_key, room->mac_key,
+                                   room->salt, new_epoch, new_room_key) < 0)
+    {
+        return -1;
+    }
+    if (client_send_password_room_rekey(epfd, c, &rpi) < 0)
+    {
+        return -1;
+    }
+
+    if (send_room_key_to_known_peers(epfd, c, peers, peers_count, rooms, rooms_count, ue) < 0)
+    {
+        fprintf(stderr, "send_room_key_to_known_peers failed\n");
+        return -1;
+    }
+
+    c->room_state = ROOM_READY;
+    OPENSSL_cleanse(new_room_key, ROOM_KEY_LEN);
+    return 0;
+}
+
+int rekey_current_room_auto(int epfd, Client* c, PeerWrapSession* peers, uint16_t peers_count,
+                            RoomSession* rooms, uint16_t rooms_count, UserEntry* ue,
+                            uint32_t room_id)
+{
+    RoomSession* room = find_room_session(rooms, rooms_count, room_id);
+    if (!room)
+    {
+        return -1;
+    }
+
+    if (room->has_password)
+    {
+        return rekey_current_password_room(epfd, c, peers, peers_count, rooms, rooms_count, ue,
+                                           room_id);
+    }
+
+    return rekey_current_room(epfd, c, peers, peers_count, rooms, rooms_count, ue);
 }

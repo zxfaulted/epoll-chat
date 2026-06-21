@@ -6,6 +6,7 @@
 #include "ksi.h"
 #include "net.h"
 #include "pem_io.h"
+#include "pkt_build.h"
 #include "room_crypto.h"
 #include "transport.h"
 #include <string.h>
@@ -497,27 +498,19 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
 
     const uint8_t* p   = data;
     const uint8_t* end = data + data_len;
-#define NEED(x)                                                                                    \
-    do                                                                                             \
-    {                                                                                              \
-        if ((size_t)(end - p) < (size_t)(x))                                                       \
-        {                                                                                          \
-            goto cleanup;                                                                          \
-        }                                                                                          \
-    } while (0)
 
-    NEED(1);
+    NEED(p, end, 1);
     kb->bundle_version = *p++;
 
-    NEED(4);
+    NEED(p, end, 4);
     kb->client_id = get_u32_be(p);
     p += 4;
 
     // identity
-    NEED(1);
+    NEED(p, end, 1);
     kb->identity_alg = *p++;
 
-    NEED(2);
+    NEED(p, end, 2);
     kb->identity_pub_len = get_u16_be(p);
     p += 2;
 
@@ -527,7 +520,7 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
         goto cleanup;
     }
 
-    NEED(kb->identity_pub_len);
+    NEED(p, end, kb->identity_pub_len);
     kb->identity_pub = OPENSSL_malloc(kb->identity_pub_len);
     if (!kb->identity_pub)
     {
@@ -538,10 +531,10 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
     p += kb->identity_pub_len;
 
     // vko
-    NEED(1);
+    NEED(p, end, 1);
     kb->vko_alg = (uint8_t)*p++;
 
-    NEED(2);
+    NEED(p, end, 2);
     kb->vko_pub_len = get_u16_be(p);
     p += 2;
 
@@ -551,7 +544,7 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
         goto cleanup;
     }
 
-    NEED(kb->vko_pub_len);
+    NEED(p, end, kb->vko_pub_len);
     kb->vko_pub = OPENSSL_malloc(kb->vko_pub_len);
     if (!kb->vko_pub)
     {
@@ -561,15 +554,15 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
     memcpy(kb->vko_pub, p, kb->vko_pub_len);
     p += kb->vko_pub_len;
 
-    NEED(8);
+    NEED(p, end, 8);
     kb->vko_expires_at = get_u64_be(p);
     p += 8;
 
     // fingerprint
-    NEED(1);
+    NEED(p, end, 1);
     kb->fingerprint_alg = *p++;
 
-    NEED(2);
+    NEED(p, end, 2);
     kb->fingerprint_len = get_u16_be(p);
     p += 2;
     if (kb->fingerprint_len == 0)
@@ -578,7 +571,7 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
         goto cleanup;
     }
 
-    NEED(kb->fingerprint_len);
+    NEED(p, end, kb->fingerprint_len);
     kb->fingerprint = OPENSSL_malloc(kb->fingerprint_len);
     if (!kb->fingerprint)
     {
@@ -589,10 +582,10 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
     p += kb->fingerprint_len;
 
     // signature
-    NEED(1);
+    NEED(p, end, 1);
     kb->signature_alg = *p++;
 
-    NEED(2);
+    NEED(p, end, 2);
     kb->signature_len = get_u16_be(p);
     p += 2;
 
@@ -602,7 +595,7 @@ KeyBundle* deserialize_key_bundle_full(const uint8_t* data, uint16_t data_len)
         goto cleanup;
     }
 
-    NEED(kb->signature_len);
+    NEED(p, end, kb->signature_len);
     kb->signature = OPENSSL_malloc(kb->signature_len);
     if (!kb->signature)
     {
@@ -881,7 +874,8 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
     }
     printf("[E2E] saved wrapping key for peer#%" PRIu32 "\n", kb->client_id);
 
-    if (c->state == STATE_READY && user_entry_exists(ue, kb->client_id) && am_room_leader(c, ue))
+    if (c->room_state == ROOM_READY && user_entry_exists(ue, kb->client_id) &&
+        am_room_leader(c, ue))
     {
         RoomSession* room = get_room_session(rooms, rooms_count, c->room_id);
 
@@ -899,7 +893,7 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
                 goto cleanup;
             }
 
-            printf("[E2E] leader sent room key to peer#%" PRIu32 ", epoch=%" PRIu64 "\n",
+            printf("[E2E] I am leader. Sent room key to peer#%" PRIu32 ", epoch=%" PRIu64 "\n",
                    kb->client_id, get_room_epoch(room));
         }
     }
@@ -927,7 +921,7 @@ int send_server_ready_key_bundles(int epfd, Client* c, Client* clients[], int* c
     }
     for (int i = 0; i < *clients_count; i++)
     {
-        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
+        if (clients[i] && clients[i]->room_state == ROOM_READY && c != clients[i] &&
             clients[i]->room_id == c->room_id && clients[i]->has_kb == 1)
         {
             if (send_kb(c, clients[i]->raw_kb, clients[i]->raw_kb_len, clients[i]->id,
@@ -956,7 +950,7 @@ int send_server_new_key_bundle(int epfd, Client* c, Client* clients[], int clien
     }
     for (int i = 0; i < clients_count; i++)
     {
-        if (clients[i] && clients[i]->state == STATE_READY && c != clients[i] &&
+        if (clients[i] && clients[i]->room_state == ROOM_READY && c != clients[i] &&
             clients[i]->room_id == c->room_id && clients[i]->has_kb == 1)
         {
             if (send_kb(clients[i], c->raw_kb, c->raw_kb_len, c->id, c->room_id, message_id) < 0)

@@ -4,6 +4,7 @@
 #include "der_io.h"
 #include "ksi.h"
 #include "net.h"
+#include "pkt_build.h"
 #include "transport.h"
 #include <string.h>
 
@@ -391,28 +392,20 @@ int verify_register_commit(uint32_t client_id, const char* name, uint8_t* nonce,
     EVP_PKEY*   public_key           = NULL;
 
     p = msg;
-#define NEED_2(x)                                                                                  \
-    do                                                                                             \
-    {                                                                                              \
-        if ((off > (size_t)msg_len) || ((size_t)(msg_len - off) < (size_t)(x)))                    \
-        {                                                                                          \
-            goto cleanup;                                                                          \
-        }                                                                                          \
-    } while (0)
 
-    NEED_2(2);
+    NEED(p + off, p + msg_len, 2);
     identity_pub_der_len = get_u16_be(p + off);
     off += 2;
 
-    NEED_2(identity_pub_der_len);
+    NEED(p + off, p + msg_len, identity_pub_der_len);
     identity_pub_der = p + off;
     off += identity_pub_der_len;
 
-    NEED_2(2);
+    NEED(p + off, p + msg_len, 2);
     siglen = get_u16_be(p + off);
     off += 2;
 
-    NEED_2(siglen);
+    NEED(p + off, p + msg_len, siglen);
     sig = p + off;
     off += siglen;
 

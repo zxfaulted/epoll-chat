@@ -13,7 +13,8 @@ OBJ := $(SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
           -Iinclude \
           -I$(OPENSSL_PREFIX)/include \
-          -D_POSIX_C_SOURCE=200809L 
+          -D_POSIX_C_SOURCE=200809L \
+		  #-g
 
 DEPFLAGS := -MMD -MP
 DEP := $(OBJ.o=.d)
@@ -39,8 +40,8 @@ SERVER_OBJS := $(OBJ_DIR)/server.o $(COMMON_OBJS)
 .PHONY: all deps clean run
 
 run: 
+	clear
 	$(MAKE) stop
-	$(MAKE) clean
 	$(MAKE) $(BIN_DIR)/client $(BIN_DIR)/server
 	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+910+10 -hold -e "./$(BIN_DIR)/server" &
 	sleep 1

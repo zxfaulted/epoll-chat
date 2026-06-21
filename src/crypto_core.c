@@ -360,13 +360,13 @@ cleanup:
 // )
 
 int get_kdf(uint8_t* secret_key, uint16_t secret_key_len, const uint8_t* salt, uint16_t salt_len,
-            uint8_t* info, uint16_t info_len, uint8_t* key, size_t keylen)
+            uint8_t* info, uint16_t info_len, uint8_t* out_key, size_t out_key_len)
 {
-    if (!secret_key || (!salt && salt_len != 0) || !info || !key)
+    if (!secret_key || (!salt && salt_len != 0) || !info || !out_key)
     {
         return -1;
     }
-    if (keylen != 32)
+    if (out_key_len != 32)
     {
         fprintf(stderr, "get_kdf: keylen must be 32\n");
         return -1;
@@ -419,7 +419,7 @@ int get_kdf(uint8_t* secret_key, uint16_t secret_key_len, const uint8_t* salt, u
                            OSSL_PARAM_utf8_string(OSSL_KDF_PARAM_MAC, "HMAC", 0),
                            OSSL_PARAM_END};
 
-    if (EVP_KDF_derive(ctx, key, keylen, params) != 1)
+    if (EVP_KDF_derive(ctx, out_key, out_key_len, params) != 1)
     {
         ossl_print_error("EVP_KDF_derive failed");
         goto cleanup;

@@ -3,6 +3,10 @@
 #include "key_bundle.h"
 #include "ksi.h"
 #include "net.h"
+#include "server_recv.h"
+#include "server_room.h"
+#include "server_send.h"
+#include "state_rules.h"
 #include "transport.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -111,6 +115,9 @@ int main()
         goto cleanup;
     };
 
+    ServerRoom server_rooms[MAX_ROOMS];
+    init_server_rooms(server_rooms, MAX_ROOMS);
+
     while (1)
     {
         int nfds = epoll_wait(epfd, events, MAX_EVENTS, -1);
@@ -140,13 +147,13 @@ int main()
                 Client* c = (Client*)ei;
                 if (cur_evs & EPOLLIN)
                 {
-                    switch (c->state)
+                    switch (c->auth_state)
                     {
                         uint8_t  msg[PAYLOAD_SIZE];
                         uint32_t msg_len;
                         int      rc;
 
-                        case STATE_WAIT_NAME:
+                        case AUTH_NEW:
                         {
                             rc = recv_into_inbuf(c);
                             if (rc == 0)
@@ -198,7 +205,7 @@ int main()
                                 break;
                             }
 
-                            PacketState p_st = validate_packet_name(msg_len, &h);
+                            PacketState p_st = validate_packet_begin(msg_len, &h);
                             if (p_st != PKT_OK)
                             {
                                 char        res[100];
@@ -226,7 +233,7 @@ int main()
                                 c->close_after_flush = 1;
                                 break;
                             }
-                            if (h.type == PKT_NAME)
+                            if (h.type == PKT_AUTH_BEGIN)
                             {
                                 if (!is_name_safe(out))
                                 {
@@ -272,7 +279,7 @@ int main()
                                     client_removed = 1;
                                     break;
                                 }
-                                c->state = STATE_WAIT_AUTH_RESPONSE;
+                                c->auth_state = AUTH_SERVER_WAIT_AUTH_RESPONSE;
                                 break;
                             }
                             if (h.type == PKT_REGISTER_BEGIN)
@@ -352,10 +359,10 @@ int main()
                                 }
                             }
 
-                            c->state = STATE_WAIT_REGISTER_COMMIT;
+                            c->auth_state = AUTH_SERVER_WAIT_REGISTER_RESPONSE;
                             break;
                         }
-                        case STATE_WAIT_REGISTER_COMMIT:
+                        case AUTH_SERVER_WAIT_REGISTER_RESPONSE:
                         {
                             rc = recv_into_inbuf(c);
                             if (rc == 0)
@@ -406,12 +413,16 @@ int main()
                                 client_removed = 1;
                                 break;
                             }
-                            if (h.type != PKT_REGISTER_COMMIT)
+                            if (!server_packet_allow(c, h.type, c->auth_state))
                             {
-                                reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                              "EXPECTED_REGISTER_COMMIT", &message_id);
-                                client_removed = 1;
-                                break;
+                                if (send_server_error(epfd, c, "UNEXPECTED PACKET TYPE",
+                                                      &message_id) < 0)
+                                {
+                                    disconnect_client(epfd, c, clients, &clients_count,
+                                                      &message_id);
+                                    client_removed = 1;
+                                    break;
+                                }
                             }
 
                             if (h.sender_id != c->id || h.room_id != 0)
@@ -519,10 +530,10 @@ int main()
                                 client_removed = 1;
                                 break;
                             }
-                            c->state = STATE_WAIT_KEY_BUNDLE;
+                            c->auth_state = AUTH_SERVER_WAIT_KEY_BUNDLE;
                             break;
                         }
-                        case STATE_WAIT_AUTH_RESPONSE:
+                        case AUTH_SERVER_WAIT_AUTH_RESPONSE:
                         {
                             rc = recv_into_inbuf(c);
                             if (rc == 0)
@@ -573,14 +584,17 @@ int main()
                                 client_removed = 1;
                                 break;
                             }
-                            if (h.type != PKT_AUTH_RESPONSE)
+                            if (!server_packet_allow(c, h.type, c->auth_state))
                             {
-                                reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                              "POP_PACKET_ERROR", &message_id);
-                                client_removed = 1;
-                                break;
+                                if (send_server_error(epfd, c, "UNEXPECTED PACKET TYPE",
+                                                      &message_id) < 0)
+                                {
+                                    disconnect_client(epfd, c, clients, &clients_count,
+                                                      &message_id);
+                                    client_removed = 1;
+                                    break;
+                                }
                             }
-
                             EVP_PKEY* public_key = ksi_read_key(c->name);
                             if (!public_key)
                             {
@@ -598,7 +612,7 @@ int main()
                                 server_verify_challenge(c, msg, (uint16_t)msg_len);
                             if (verification_response == 0)
                             {
-                                fprintf(stderr, "SIGN IS WRON\n");
+                                fprintf(stderr, "SIGN IS WRONG\n");
                                 disconnect_client(epfd, c, clients, &clients_count, &message_id);
                                 client_removed = 1;
                                 break;
@@ -626,14 +640,14 @@ int main()
                                 client_removed = 1;
                                 break;
                             }
-                            c->state = STATE_WAIT_KEY_BUNDLE;
+                            c->auth_state = AUTH_SERVER_WAIT_KEY_BUNDLE;
                             break;
                         }
-                        case STATE_WAIT_KEY_BUNDLE:
+                        case AUTH_SERVER_WAIT_KEY_BUNDLE:
                         {
                             // 1. Проверить размер payload.
                             // 2. Сохранить raw key bundle в Client.
-                            // 3. Перевести клиента в STATE_READY.
+                            // 3. Перевести клиента в ROOM_READY.
                             // 4. Отправить новому клиенту список участников.
                             // 5. Отправить новому клиенту key bundles всех текущих участников
                             // комнаты.
@@ -657,7 +671,7 @@ int main()
                                     client_removed = 1;
                                     break;
                                 }
-                                fprintf(stderr, "recv_into_buf STATE_WAIT_KEY_BUNDLE");
+                                fprintf(stderr, "recv_into_buf C_WAIT_KEY_BUNDLE");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
                                                       &message_id) < 0)
                                 {
@@ -690,9 +704,9 @@ int main()
                                 client_removed = 1;
                                 break;
                             }
-                            if (h.type != PKT_ENC_KEY_BUNDLE)
+                            if (!server_packet_allow(c, h.type, c->auth_state))
                             {
-                                if (send_server_error(epfd, c, "EXPECTED PKT_ENC_KEY_BUNDLE",
+                                if (send_server_error(epfd, c, "UNEXPECTED PACKET TYPE",
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
@@ -700,8 +714,6 @@ int main()
                                     client_removed = 1;
                                     break;
                                 }
-                                c->close_after_flush = 1;
-                                break;
                             }
                             // 1. Проверить размер payload.
                             if (msg_len == 0)
@@ -798,8 +810,8 @@ int main()
                             c->raw_kb_len = msg_len;
                             c->has_kb     = 1;
 
-                            // 3. Перевести клиента в STATE_READY.
-                            c->state = STATE_READY;
+                            // 3. Перевести клиента в ROOM_READY.
+                            c->room_state = ROOM_READY;
 
                             // 4. Отправить новому клиенту список участников.
                             if (send_server_ready_users(c, c->room_id, clients, clients_count,
@@ -855,18 +867,21 @@ int main()
                                 break;
                             }
 
-                            c->state = STATE_READY;
+                            c->auth_state = AUTH_READY;
+                            c->room_state = ROOM_READY;
                             break;
                         }
-                        case STATE_WAIT_ROOM_KEY:
+                        case AUTH_CLIENT_WAIT_AUTH_CHALLENGE:
                             break;
-                        case STATE_WAIT_AUTH_CHALLENGE:
+                        case AUTH_CLIENT_WAIT_REGISTER_OK:
                             break;
-                        case STATE_WAIT_REGISTER_OK:
+                        case AUTH_CLIENT_WAIT_REGISTER_CHALLENGE:
                             break;
-                        case STATE_WAIT_REGISTER_CHALLENGE:
+                        case AUTH_CLIENT_WAIT_AUTH_OK:
                             break;
-                        case STATE_READY:
+                        case AUTH_CLIENT_WAIT_KEY_BUNDLE_OK:
+                            break;
+                        case AUTH_READY:
                             rc = recv_into_inbuf(c);
                             if (rc < 0)
                             {
@@ -922,6 +937,17 @@ int main()
                                     client_removed = 1;
                                     break;
                                 }
+                                if (!server_packet_allow(c, h.type, c->auth_state))
+                                {
+                                    if (send_server_error(epfd, c, "UNEXPECTED PACKET TYPE",
+                                                          &message_id) < 0)
+                                    {
+                                        disconnect_client(epfd, c, clients, &clients_count,
+                                                          &message_id);
+                                        client_removed = 1;
+                                        break;
+                                    }
+                                }
                                 switch (h.type)
                                 {
                                     case PKT_CHAT:
@@ -971,6 +997,59 @@ int main()
                                     }
                                     case PKT_ENC_ROOM_KEY:
                                     {
+                                        if (c->room_id != h.room_id)
+                                        {
+
+                                            fprintf(stderr, "header id differ\n");
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "YOUR HEADER ID DIFFERS WITH YOUR ROOM",
+                                                          &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        // if (clients_leader_id(clients, clients_count, c->room_id)
+                                        // !=
+                                        //     c->id)
+                                        // {
+                                        //     fprintf(stderr,
+                                        //             "pkt_enc_room_key: not leader tried to
+                                        //             send\n");
+                                        //     send_server_error(epfd, c, "YOU ARE NOT THE LEADER",
+                                        //                       &message_id);
+                                        //     break;
+                                        // }
+
+                                        uint32_t to_client_id = get_u32_be(msg);
+                                        Client*  to =
+                                            find_client(clients, clients_count, to_client_id);
+                                        if (!to)
+                                        {
+                                            fprintf(stderr, "find_client is NULL\n");
+                                            send_server_error(
+                                                epfd, c,
+                                                "PKT_ENC_ROOM_KEY: NO TARGET CLIENT WITH THIS ID",
+                                                &message_id);
+                                            break;
+                                        }
+                                        if (to->room_id != c->room_id)
+                                        {
+                                            fprintf(stderr,
+                                                    "pkt_enc_room_key: room is not the same\n");
+                                            send_server_error(epfd, c, "YOU ARE NOT IN THIS ROOM",
+                                                              &message_id);
+                                            break;
+                                        }
+                                        if (to_client_id == c->id)
+                                        {
+                                            fprintf(stderr,
+                                                    "pkt_enc_room_key: tried to send to himself\n");
+                                            send_server_error(
+                                                epfd, c,
+                                                "YOU CAN'T SEND ENCRYPTED ROOM KEY TO YOURSELF",
+                                                &message_id);
+                                            break;
+                                        }
                                         if (forward_room_key_packet(epfd, clients, clients_count, c,
                                                                     &h, msg, msg_len,
                                                                     &message_id) < 0)
@@ -984,24 +1063,154 @@ int main()
                                         }
                                         break;
                                     }
-                                    case PKT_ROOM_CHANGE:
+                                    case PKT_ROOM_JOIN_BEGIN:
                                     {
-                                        PacketState p_st = validate_packet_room_change(msg_len, &h);
-
-                                        if (p_st != PKT_OK)
+                                        uint32_t room_id;
+                                        if (server_recv_pkt_room_join_begin(msg, msg_len,
+                                                                            &room_id) < 0)
                                         {
-                                            if (send_server_error(epfd, c, packet_state_str(p_st),
-                                                                  &message_id) < 0)
+                                            fprintf(stderr,
+                                                    "server_recv_pkt_room_join_begin failed\n");
+                                            reject_packet(
+                                                epfd, c, c->ei.fd, clients, &clients_count,
+                                                "forward_room_key_packet failed", &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        ServerRoom* room = server_room_find_by_id(
+                                            server_rooms, MAX_ROOMS, room_id);
+                                        if (!room)
+                                        {
+                                            send_server_error(
+                                                epfd, c, "ROOM WITH THIS ID IS NOT CREATED YET",
+                                                &message_id);
+                                            break;
+                                        }
+                                        if (!room->has_password)
+                                        {
+                                            if (room_id == c->room_id)
+                                            {
+                                                if (send_server_user_event(
+                                                        c, c->room_id, PKT_ROOM_CHANGE_OK, c->name,
+                                                        c->id, &message_id) < 0)
+                                                {
+                                                    disconnect_client(epfd, c, clients,
+                                                                      &clients_count, &message_id);
+                                                    client_removed = 1;
+                                                    break;
+                                                }
+                                                if (set_epollout_to_client(epfd, c) < 0)
+                                                {
+                                                    disconnect_client(epfd, c, clients,
+                                                                      &clients_count, &message_id);
+                                                    client_removed = 1;
+                                                    break;
+                                                }
+                                                break;
+                                            }
+
+                                            // рассылка PKT_LEAVE в прошлую комнату
+                                            broadcast_user_event(epfd, c, c->room_id, clients,
+                                                                 &clients_count, PKT_LEAVE,
+                                                                 &message_id);
+                                            // смена комнаты для клиента
+                                            uint32_t prev_room_id = c->room_id;
+                                            c->room_id            = room_id;
+                                            printf("Client %s#%" PRIu32
+                                                   " changed room from %" PRIu32 " to %" PRIu32
+                                                   "\n",
+                                                   c->name, c->id, prev_room_id, c->room_id);
+                                            // рассылка PKT_JOIN в новую комнату
+                                            broadcast_user_event(epfd, c, c->room_id, clients,
+                                                                 &clients_count, PKT_JOIN,
+                                                                 &message_id);
+                                            // подтверждение смены комнаты клиенту
+                                            if (send_server_user_event(c, c->room_id,
+                                                                       PKT_ROOM_CHANGE_OK, c->name,
+                                                                       c->id, &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
                                             }
-                                            c->close_after_flush = 1;
+                                            // список готовых пользователей для вошедшего
+                                            if (send_server_ready_users(c, c->room_id, clients,
+                                                                        clients_count,
+                                                                        &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            // key bundles существующих для вошедшего
+                                            if (send_server_ready_key_bundles(epfd, c, clients,
+                                                                              &clients_count,
+                                                                              &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            // key bundle вошедшего для существующих
+                                            if (send_server_new_key_bundle(epfd, c, clients,
+                                                                           clients_count,
+                                                                           &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            // PKT_ROOM_SYNC_DONE вошедшему
+                                            if (send_server_user_event(c, c->room_id,
+                                                                       PKT_ROOM_SYNC_DONE, c->name,
+                                                                       c->id, &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            if (set_epollout_to_client(epfd, c) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            c->room_state = ROOM_READY;
                                             break;
                                         }
-                                        if (h.room_id == c->room_id)
+
+                                        if (server_send_room_password_info(
+                                                epfd, c, room_id, &room->rpi, &message_id) < 0)
+                                        {
+                                            send_server_error(epfd, c, "COULD NOT CREATE ROOM",
+                                                              &message_id);
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        break;
+                                    }
+
+                                    case PKT_ROOM_UNLOCK:
+                                    {
+                                        uint32_t room_id;
+                                        if (server_recv_pkt_room_unlock(msg, msg_len, &room_id) < 0)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count, "PKT ROOM UNLOCK BAD",
+                                                          &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+
+                                        if (room_id == c->room_id)
                                         {
                                             if (send_server_user_event(c, c->room_id,
                                                                        PKT_ROOM_CHANGE_OK, c->name,
@@ -1021,13 +1230,36 @@ int main()
                                             }
                                             break;
                                         }
+
+                                        ServerRoom* room = server_room_find_by_id(
+                                            server_rooms, MAX_ROOMS, room_id);
+                                        if (!room || !room->has_password)
+                                        {
+                                            if (send_server_error(epfd, c, "BAD ROOM TO ENTER",
+                                                                  &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            if (set_epollout_to_client(epfd, c) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            break;
+                                        }
+
                                         // рассылка PKT_LEAVE в прошлую комнату
                                         broadcast_user_event(epfd, c, c->room_id, clients,
                                                              &clients_count, PKT_LEAVE,
                                                              &message_id);
                                         // смена комнаты для клиента
                                         uint32_t prev_room_id = c->room_id;
-                                        c->room_id            = h.room_id;
+                                        c->room_id            = room_id;
                                         printf("Client %s#%" PRIu32 " changed room from %" PRIu32
                                                " to %" PRIu32 "\n",
                                                c->name, c->id, prev_room_id, c->room_id);
@@ -1088,9 +1320,217 @@ int main()
                                             client_removed = 1;
                                             break;
                                         }
-                                        c->state = STATE_READY;
+                                        c->room_state = ROOM_READY;
                                         break;
                                     }
+
+                                    case PKT_ROOM_CREATE:
+                                    {
+                                        int owner_ret = server_room_is_owner_of_any(
+                                            server_rooms, MAX_ROOMS, c->id);
+                                        if (owner_ret != 0)
+                                        {
+                                            char opened_info[50];
+                                            snprintf(opened_info, sizeof(opened_info),
+                                                     "YOU HAVE ALREADY BEEN OPENED ROOM WITH ID %d",
+                                                     owner_ret);
+                                            if (send_server_error(epfd, c, opened_info,
+                                                                  &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            if (set_epollout_to_client(epfd, c) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                        }
+                                        uint32_t wanted_room_id;
+                                        if (parse_pkt_room_create_payload(msg, msg_len,
+                                                                          &wanted_room_id) != 0)
+                                        {
+                                            reject_packet(
+                                                epfd, c, c->ei.fd, clients, &clients_count,
+                                                "BAD PKT_ROOM_CREATE PACKET", &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        if (server_room_create(server_rooms, MAX_ROOMS,
+                                                               wanted_room_id, c->id) < 1)
+                                        {
+                                            if (send_server_error(epfd, c, "FAILED TO CREATE ROOM",
+                                                                  &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                            if (set_epollout_to_client(epfd, c) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                        }
+                                        if (server_send_pkt_room_create_ok(epfd, c, wanted_room_id,
+                                                                           &message_id) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+
+                                        break;
+                                    }
+                                    // PKT_ROOM_CREATE_PASSWORD создает комнату и отправляет
+                                    // метаданные серверу
+                                    // client -> server:
+                                    // PKT_ROOM_CREATE_PASSWORD
+                                    // [4 room_id]
+                                    // [16 salt]  random
+                                    // [32 nonce] random
+                                    // password_key = PBKDF2(password, salt)
+                                    // [32 encrypted_room_key] encrypt(password_key, room_key)
+                                    // [16 tag] tag = auth_tag(
+                                    //     key        = password_key,
+                                    //     nonce      = nonce,
+                                    //     plaintext  = room_key,
+                                    //     aad        = "room_password_v1" || room_id
+                                    // )
+                                    case PKT_ROOM_CREATE_PASSWORD:
+                                    {
+                                        uint32_t         wanted_room_id = 0;
+                                        RoomPasswordInfo rpi;
+                                        memset(&rpi, 0, sizeof(rpi));
+                                        if (parse_pkt_room_create_password(
+                                                msg, msg_len, &wanted_room_id, &rpi) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        int owner_ret = server_room_has_owner(
+                                            server_rooms, MAX_ROOMS, wanted_room_id);
+                                        if (owner_ret)
+                                        {
+                                            char info[50];
+                                            snprintf(info, sizeof(info),
+                                                     "YOU ALREADY OWN THE ROOM #%" PRIu32 "",
+                                                     owner_ret);
+                                            if (send_server_error(epfd, c, info, &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+
+                                            break;
+                                        }
+                                        if (server_room_create_password(server_rooms, MAX_ROOMS,
+                                                                        wanted_room_id, c->id,
+                                                                        &rpi) < 0)
+                                        {
+
+                                            if (send_server_error(
+                                                    epfd, c,
+                                                    "SERVER ERROR: COULD NOT CREATE THE ROOM",
+                                                    &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+                                        }
+                                        if (server_send_pkt_room_create_ok(epfd, c, wanted_room_id,
+                                                                           &message_id) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+
+                                        break;
+                                    }
+                                    case PKT_ROOM_PASSWORD_REKEY:
+                                    {
+                                        uint32_t         room_id = 0;
+                                        RoomPasswordInfo rpi;
+                                        memset(&rpi, 0, sizeof(rpi));
+
+                                        if (parse_pkt_room_password_rekey_payload(
+                                                msg, msg_len, &room_id, &rpi) < 0)
+                                        {
+                                            return -1;
+                                        }
+
+                                        ServerRoom* room = server_room_find_by_id(
+                                            server_rooms, MAX_ROOMS, room_id);
+
+                                        if (!room || !room->has_password ||
+                                            rpi.epoch != room->rpi.epoch + 1)
+                                        {
+                                            reject_packet(
+                                                epfd, c, c->ei.fd, clients, &clients_count,
+                                                "INVALID PKT_ROOM_PASSWORD_REKEY", &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+
+                                        if (clients_leader_id(clients, clients_count, room_id) !=
+                                            c->id)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "YOU ARE NOT THE LEADER TO SEND SERVER "
+                                                          "ROOM PASSWORD METADATA",
+                                                          &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+
+                                        if (server_room_update_metadata(room, &rpi) < 0)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        break;
+                                    }
+
+                                        // case PKT_ROOM_CHANGE:
+                                        // {
+                                        //     PacketState p_st =
+                                        //     validate_packet_room_change(msg_len, &h);
+
+                                        //     if (p_st != PKT_OK)
+                                        //     {
+                                        //         if (send_server_error(epfd, c,
+                                        //         packet_state_str(p_st),
+                                        //                               &message_id) < 0)
+                                        //         {
+                                        //             disconnect_client(epfd, c, clients,
+                                        //             &clients_count,
+                                        //                               &message_id);
+                                        //             client_removed = 1;
+                                        //             break;
+                                        //         }
+                                        //         c->close_after_flush = 1;
+                                        //         break;
+                                        //     }
+
                                     case PKT_ENC_CHAT:
                                     {
                                         if (c->room_id != h.room_id)

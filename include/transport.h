@@ -26,4 +26,6 @@ int set_epollout_to_client(int epfd, Client* c);
 int unset_epollout_to_client(int epfd, Client* c);
 int set_nonblocking(int fd);
 
+uint32_t next_message_id(uint32_t* message_id);
+
 #endif

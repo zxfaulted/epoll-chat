@@ -1,7 +1,9 @@
 #include "room_crypto.h"
 #include "crypto.h"
 #include "e2e_protocol.h"
+#include "room_password.h"
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <string.h>
 
 // 1. Из wrapping_key вывести два ключа:
@@ -30,7 +32,7 @@
 //     encrypted_room_key
 //     tag
 int kuznechik_encrypt_room_key(uint8_t* nonce, uint8_t* enc_key, uint8_t* room_key,
-                               int room_key_len, uint8_t* mac_key, uint8_t aad[AAD_LEN],
+                               int room_key_len, uint8_t* mac_key, uint8_t* aad, uint16_t aad_len,
                                uint8_t** out, uint16_t* out_len, uint8_t** tag_out,
                                uint16_t* tag_out_len)
 {
@@ -103,7 +105,7 @@ int kuznechik_encrypt_room_key(uint8_t* nonce, uint8_t* enc_key, uint8_t* room_k
         goto cleanup;
     }
 
-    if (EVP_MAC_update(mctx, aad, AAD_LEN) != 1)
+    if (EVP_MAC_update(mctx, aad, aad_len) != 1)
     {
         ossl_print_error("EVP_MAC_update");
         goto cleanup;
@@ -170,8 +172,8 @@ cleanup:
 }
 
 int kuznechik_decrypt_room_key(uint8_t* nonce, uint8_t* enc_key, uint8_t* encrypted_room_key,
-                               int encrypted_room_key_len, uint8_t* mac_key, uint8_t aad[AAD_LEN],
-                               uint8_t** out, uint16_t* out_len, uint8_t* tag_in,
+                               int encrypted_room_key_len, uint8_t* mac_key, uint8_t* aad,
+                               uint16_t aad_len, uint8_t** out, uint16_t* out_len, uint8_t* tag_in,
                                uint16_t tag_in_len)
 {
     if (!nonce || !enc_key || !encrypted_room_key || !mac_key || encrypted_room_key_len != 32 ||
@@ -208,7 +210,7 @@ int kuznechik_decrypt_room_key(uint8_t* nonce, uint8_t* enc_key, uint8_t* encryp
         goto cleanup;
     }
 
-    if (EVP_MAC_update(mctx, aad, AAD_LEN) != 1)
+    if (EVP_MAC_update(mctx, aad, aad_len) != 1)
     {
         ossl_print_error("EVP_MAC_update");
         goto cleanup;
@@ -246,6 +248,7 @@ int kuznechik_decrypt_room_key(uint8_t* nonce, uint8_t* enc_key, uint8_t* encryp
     if (CRYPTO_memcmp(tag, tag_in, tag_in_len) != 0)
     {
         fprintf(stderr, "invalid tag\n");
+        ret = -2;
         goto cleanup;
     }
 
@@ -362,5 +365,231 @@ int save_peer_wrap_session(PeerWrapSession* peers, size_t count, uint32_t peer_i
     memcpy(slot->wrapping_key, wrapping_key, WRAPPING_KEY_LEN);
     slot->used = 1;
 
+    return 0;
+}
+
+int get_password_key(uint8_t* password, uint16_t password_len, uint8_t salt[ROOM_SALT_LEN],
+                     uint8_t out_key[PASSWORD_KEY_LEN], uint8_t* info, uint16_t info_len)
+{
+    if (get_kdf(password, password_len, salt, ROOM_SALT_LEN, info, info_len, out_key,
+                PASSWORD_KEY_LEN) < 0)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+int generate_new_rpi(RoomPasswordInfo* rpi)
+{
+    if (RAND_bytes(rpi->nonce, ROOM_NONCE_LEN) != 1)
+    {
+        return -1;
+    }
+    if (RAND_bytes(rpi->salt, ROOM_SALT_LEN) != 1)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+int generate_room_key(uint8_t room_key[ROOM_KEY_LEN])
+{
+    if (RAND_bytes(room_key, ROOM_KEY_LEN) != 1)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+int encrypt_room_key_with_password(uint32_t room_id, uint8_t* password, uint16_t password_len,
+                                   uint8_t plaintext_room_key[ROOM_KEY_LEN], RoomPasswordInfo* rpi)
+{
+    char info_enc[50];
+    snprintf(info_enc, sizeof(info_enc), "room_password_enc_key%" PRIu32 "", room_id);
+    char info_mac[50] = "room_password_mac_key";
+    snprintf(info_mac, sizeof(info_enc), "room_password_mac_key%" PRIu32 "", room_id);
+    uint8_t enc_key[PASSWORD_KEY_LEN];
+    uint8_t mac_key[PASSWORD_KEY_LEN];
+    if (get_password_key(password, password_len, rpi->salt, enc_key, (uint8_t*)info_enc,
+                         (uint16_t)(strlen(info_enc))) < 0)
+    {
+        fprintf(stderr, "get_password_key failed\n");
+        return -1;
+    }
+    if (get_password_key(password, password_len, rpi->salt, mac_key, (uint8_t*)info_mac,
+                         (uint16_t)(strlen(info_mac))) < 0)
+    {
+        fprintf(stderr, "get_password_key failed\n");
+        return -1;
+    }
+
+    uint8_t aad_label[22] = "room-password-wrap-v1";
+    uint8_t aad[sizeof(aad_label) - 1 + ROOM_ID_LEN];
+    size_t  off = 0;
+    memset(aad, 0, sizeof(aad));
+    memcpy(aad, aad_label, sizeof(aad_label) - 1);
+    off += sizeof(aad_label) - 1;
+    put_u32_be(aad + off, room_id);
+    off += ROOM_ID_LEN;
+
+    uint8_t* key_local;
+    uint16_t key_local_len;
+    uint8_t* tag_local;
+    uint16_t tag_local_len;
+    int      ret = kuznechik_encrypt_room_key(rpi->nonce, enc_key, plaintext_room_key, ROOM_KEY_LEN,
+                                              mac_key, aad, sizeof(aad), &key_local, &key_local_len,
+                                              &tag_local, &tag_local_len);
+    if (ret < 0)
+    {
+        fprintf(stderr, "kuznechik_decrypt_room_key failed\n");
+        return -1;
+    }
+    memcpy(rpi->encrypted_room_key, key_local, key_local_len);
+    memcpy(rpi->tag, tag_local, tag_local_len);
+    OPENSSL_free(key_local);
+    OPENSSL_free(tag_local);
+    return 0;
+}
+
+int try_decrypt_room_key(uint32_t room_id, uint8_t* password, uint16_t password_len,
+                         RoomPasswordInfo* rpi, uint8_t out_room_key[ROOM_KEY_LEN])
+{
+    char info_enc[50];
+    snprintf(info_enc, sizeof(info_enc), "room_password_enc_key%" PRIu32 "", room_id);
+    char info_mac[50] = "room_password_mac_key";
+    snprintf(info_mac, sizeof(info_enc), "room_password_mac_key%" PRIu32 "", room_id);
+    uint8_t enc_key[PASSWORD_KEY_LEN];
+    uint8_t mac_key[PASSWORD_KEY_LEN];
+    if (get_password_key(password, password_len, rpi->salt, enc_key, (uint8_t*)info_enc,
+                         (uint16_t)(strlen(info_enc))) < 0)
+    {
+        fprintf(stderr, "get_password_key failed\n");
+        return -1;
+    }
+    if (get_password_key(password, password_len, rpi->salt, mac_key, (uint8_t*)info_mac,
+                         (uint16_t)(strlen(info_mac))) < 0)
+    {
+        fprintf(stderr, "get_password_key failed\n");
+        return -1;
+    }
+
+    uint8_t aad_label[22] = "room-password-wrap-v1";
+    uint8_t aad[sizeof(aad_label) - 1 + ROOM_ID_LEN];
+    size_t  off = 0;
+    memset(aad, 0, sizeof(aad));
+    memcpy(aad + off, aad_label, sizeof(aad_label) - 1);
+    off += sizeof(aad_label) - 1;
+    put_u32_be(aad + off, room_id);
+    off += ROOM_ID_LEN;
+
+    uint8_t* local_out;
+    uint16_t local_out_len;
+    int      ret = kuznechik_decrypt_room_key(rpi->nonce, enc_key, rpi->encrypted_room_key,
+                                              ENCRYPTED_ROOM_KEY_LEN, mac_key, aad, sizeof(aad),
+                                              &local_out, &local_out_len, rpi->tag, ROOM_TAG_LEN);
+    if (ret == -2)
+    {
+        return -2;
+    }
+    else if (ret < 0)
+    {
+        fprintf(stderr, "kuznechik_decrypt_room_key failed\n");
+        return -1;
+    }
+    memcpy(out_room_key, local_out, local_out_len);
+    OPENSSL_clear_free(local_out, local_out_len);
+    return 0;
+}
+
+int try_decrypt_room_key_ex(uint32_t room_id, uint8_t* password, uint16_t password_len,
+                            RoomPasswordInfo* rpi, uint8_t out_room_key[ROOM_KEY_LEN],
+                            uint8_t out_enc_key[PASSWORD_KEY_LEN],
+                            uint8_t out_mac_key[ROOM_PASS_KEY_LEN])
+{
+    char info_enc[50];
+    snprintf(info_enc, sizeof(info_enc), "room_password_enc_key%" PRIu32 "", room_id);
+    char info_mac[50] = "room_password_mac_key";
+    snprintf(info_mac, sizeof(info_enc), "room_password_mac_key%" PRIu32 "", room_id);
+    uint8_t enc_key[PASSWORD_KEY_LEN];
+    uint8_t mac_key[PASSWORD_KEY_LEN];
+    if (get_password_key(password, password_len, rpi->salt, enc_key, (uint8_t*)info_enc,
+                         (uint16_t)(strlen(info_enc))) < 0)
+    {
+        fprintf(stderr, "get_password_key failed\n");
+        return -1;
+    }
+    if (get_password_key(password, password_len, rpi->salt, mac_key, (uint8_t*)info_mac,
+                         (uint16_t)(strlen(info_mac))) < 0)
+    {
+        fprintf(stderr, "get_password_key failed\n");
+        return -1;
+    }
+
+    uint8_t aad_label[22] = "room-password-wrap-v1";
+    uint8_t aad[sizeof(aad_label) - 1 + ROOM_ID_LEN];
+    size_t  off = 0;
+    memset(aad, 0, sizeof(aad));
+    memcpy(aad + off, aad_label, sizeof(aad_label) - 1);
+    off += sizeof(aad_label) - 1;
+    put_u32_be(aad + off, room_id);
+    off += ROOM_ID_LEN;
+
+    uint8_t* local_out;
+    uint16_t local_out_len;
+    int      ret = kuznechik_decrypt_room_key(rpi->nonce, enc_key, rpi->encrypted_room_key,
+                                              ENCRYPTED_ROOM_KEY_LEN, mac_key, aad, sizeof(aad),
+                                              &local_out, &local_out_len, rpi->tag, ROOM_TAG_LEN);
+    if (ret == -2)
+    {
+        return -2;
+    }
+    else if (ret < 0)
+    {
+        fprintf(stderr, "kuznechik_decrypt_room_key failed\n");
+        return -1;
+    }
+    memcpy(out_room_key, local_out, local_out_len);
+    memcpy(out_enc_key, enc_key, PASSWORD_KEY_LEN);
+    memcpy(out_mac_key, mac_key, PASSWORD_KEY_LEN);
+    OPENSSL_clear_free(local_out, local_out_len);
+    return 0;
+}
+
+int encrypt_room_key_with_password_keys(uint32_t room_id, uint8_t enc_key[PASSWORD_KEY_LEN],
+                                        uint8_t           mac_key[PASSWORD_KEY_LEN],
+                                        uint8_t           plaintext_room_key[ROOM_KEY_LEN],
+                                        RoomPasswordInfo* rpi)
+{
+    char info_enc[50];
+    snprintf(info_enc, sizeof(info_enc), "room_password_enc_key%" PRIu32 "", room_id);
+    char info_mac[50] = "room_password_mac_key";
+    snprintf(info_mac, sizeof(info_enc), "room_password_mac_key%" PRIu32 "", room_id);
+
+    uint8_t aad_label[22] = "room-password-wrap-v1";
+    uint8_t aad[sizeof(aad_label) - 1 + ROOM_ID_LEN];
+    size_t  off = 0;
+    memset(aad, 0, sizeof(aad));
+    memcpy(aad, aad_label, sizeof(aad_label) - 1);
+    off += sizeof(aad_label) - 1;
+    put_u32_be(aad + off, room_id);
+    off += ROOM_ID_LEN;
+
+    uint8_t* key_local;
+    uint16_t key_local_len;
+    uint8_t* tag_local;
+    uint16_t tag_local_len;
+    int      ret = kuznechik_encrypt_room_key(rpi->nonce, enc_key, plaintext_room_key, ROOM_KEY_LEN,
+                                              mac_key, aad, sizeof(aad), &key_local, &key_local_len,
+                                              &tag_local, &tag_local_len);
+    if (ret < 0)
+    {
+        fprintf(stderr, "kuznechik_decrypt_room_key failed\n");
+        return -1;
+    }
+    memcpy(rpi->encrypted_room_key, key_local, key_local_len);
+    memcpy(rpi->tag, tag_local, tag_local_len);
+    OPENSSL_free(key_local);
+    OPENSSL_free(tag_local);
     return 0;
 }
