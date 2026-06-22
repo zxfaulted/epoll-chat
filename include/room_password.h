@@ -17,6 +17,8 @@ typedef struct RoomPasswordInfo
     uint8_t salt[ROOM_SALT_LEN];
     uint8_t nonce[ROOM_NONCE_LEN];
     uint8_t tag[ROOM_TAG_LEN];
+
+    uint8_t verifier[ROOM_PASSWORD_VERIFIER_LEN];
 } RoomPasswordInfo;
 
 int build_pkt_room_password_info(uint32_t room_id, uint64_t epoch, RoomPasswordInfo* rpi,

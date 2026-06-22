@@ -952,11 +952,6 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
                 ossl_print_error("RAND_BYTES");
                 return -1;
             }
-            // if (save_room_session(rooms, MAX_ROOMS, room_id, 1, room_key) < 0)
-            // {
-            //     fprintf(stderr, "save_room_session failed\n");
-            //     return -1;
-            // }
 
             int ret = -1;
             ret     = client_send_pkt_room_create_password(epfd, c, room_id, password, room_key);

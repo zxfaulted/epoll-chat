@@ -2,6 +2,7 @@
 #include "crypto.h"
 #include "e2e_protocol.h"
 #include "room_password.h"
+#include <openssl/core_names.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <string.h>
@@ -445,8 +446,16 @@ int encrypt_room_key_with_password(uint32_t room_id, uint8_t* password, uint16_t
         fprintf(stderr, "kuznechik_decrypt_room_key failed\n");
         return -1;
     }
+
     memcpy(rpi->encrypted_room_key, key_local, key_local_len);
     memcpy(rpi->tag, tag_local, tag_local_len);
+
+    if (get_verifier(mac_key, room_id, rpi->epoch, rpi->verifier) < 0)
+    {
+        fprintf(stderr, "get_verifier failed\n");
+        return -1;
+    }
+
     OPENSSL_free(key_local);
     OPENSSL_free(tag_local);
     return 0;
@@ -592,4 +601,79 @@ int encrypt_room_key_with_password_keys(uint32_t room_id, uint8_t enc_key[PASSWO
     OPENSSL_free(key_local);
     OPENSSL_free(tag_local);
     return 0;
+}
+
+// HMAC(
+//     key = mac_key,
+//     data = "room_password_server_v1" || room_id || epoch,
+//     out = verifier
+// )
+int get_verifier(uint8_t mac_key[ROOM_KEY_LEN], uint32_t room_id, uint64_t epoch,
+                 uint8_t out_verifier[ROOM_PASSWORD_VERIFIER_LEN])
+{
+    int          ret = -1;
+    EVP_MAC*     mac = NULL;
+    EVP_MAC_CTX* ctx;
+    mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    if (!mac)
+    {
+        ossl_print_error("EVP_MAC_fetch");
+        goto cleanup;
+    }
+    ctx = EVP_MAC_CTX_new(mac);
+    if (!ctx)
+    {
+        ossl_print_error("EVP_MAC_CTX_new");
+        goto cleanup;
+    }
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, "md_gost12_256", 0),
+        OSSL_PARAM_construct_end()};
+    if (EVP_MAC_init(ctx, mac_key, ROOM_KEY_LEN, params) != 1)
+    {
+        ossl_print_error("EVP_MAC_init");
+        goto cleanup;
+    }
+    char line[] = "room_password_server_v1";
+    if (EVP_MAC_update(ctx, (uint8_t*)line, strlen(line)) != 1)
+    {
+        ossl_print_error("EVP_MAC_update");
+        goto cleanup;
+    }
+
+    uint8_t room_id_be[ROOM_ID_LEN] = {0};
+    put_u32_be(room_id_be, room_id);
+
+    if (EVP_MAC_update(ctx, room_id_be, ROOM_ID_LEN) != 1)
+    {
+        ossl_print_error("EVP_MAC_update");
+        goto cleanup;
+    }
+
+    uint8_t epoch_be[EPOCH_LEN] = {0};
+    put_u64_be(epoch_be, epoch);
+
+    if (EVP_MAC_update(ctx, epoch_be, EPOCH_LEN) != 1)
+    {
+        ossl_print_error("EVP_MAC_update");
+        goto cleanup;
+    }
+
+    size_t outl;
+    if (EVP_MAC_final(ctx, out_verifier, &outl, ROOM_PASSWORD_VERIFIER_LEN) != 1)
+    {
+        ossl_print_error("EVP_MAC_final");
+        goto cleanup;
+    }
+    if (outl != ROOM_PASS_KEY_LEN)
+    {
+        fprintf(stderr, "outl and ROOM_PASS_KEY_LEN differ\n");
+        goto cleanup;
+    }
+
+    ret = 0;
+cleanup:
+    EVP_MAC_free(mac);
+    EVP_MAC_CTX_free(ctx);
+    return ret;
 }

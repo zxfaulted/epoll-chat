@@ -738,6 +738,13 @@ int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uin
         return -1;
     }
 
+    if (get_verifier(room->mac_key, room_id, rpi.epoch, rpi.verifier) < 0)
+    {
+        fprintf(stderr, "get_verifier failed\n");
+        OPENSSL_cleanse(new_room_key, ROOM_KEY_LEN);
+        return -1;
+    }
+
     if (save_password_room_session(rooms, rooms_count, room_id, room->enc_key, room->mac_key,
                                    room->salt, new_epoch, new_room_key) < 0)
     {

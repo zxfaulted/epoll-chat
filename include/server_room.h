@@ -8,7 +8,6 @@ typedef struct ServerRoom
 {
     uint32_t room_id;
     uint32_t owner_id;
-    uint32_t leader_id;
 
     int used;
 

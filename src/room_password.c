@@ -161,6 +161,7 @@ int build_pkt_room_create_password_payload(uint32_t room_id, uint8_t* password,
     memcpy(rpi->nonce, nonce, ROOM_NONCE_LEN);
     memcpy(rpi->salt, salt, ROOM_SALT_LEN);
     rpi->epoch = 1;
+
     if (encrypt_room_key_with_password(room_id, password, password_len, plaintext_room_key, rpi) <
         0)
     {
@@ -170,6 +171,9 @@ int build_pkt_room_create_password_payload(uint32_t room_id, uint8_t* password,
     off += ENCRYPTED_ROOM_KEY_LEN;
     memcpy(buf + off, rpi->tag, ROOM_TAG_LEN);
     off += ROOM_TAG_LEN;
+
+    memcpy(buf + off, rpi->verifier, ROOM_PASSWORD_VERIFIER_LEN);
+    off += ROOM_PASSWORD_VERIFIER_LEN;
 
     if (off != sizeof(buf))
     {
@@ -195,6 +199,7 @@ int build_pkt_room_create_password_payload(uint32_t room_id, uint8_t* password,
 //     plaintext  = room_key,
 //     aad        = "room_password_v1" || room_id
 // )
+// [32 verifier]
 int build_pkt_room_password_rekey_payload(uint32_t room_id, RoomPasswordInfo* rpi,
                                           uint8_t (*out_msg)[PKT_ROOM_CREATE_PASSWORD_PAYLOAD_LEN])
 {
@@ -220,8 +225,12 @@ int build_pkt_room_password_rekey_payload(uint32_t room_id, RoomPasswordInfo* rp
 
     memcpy(buf + off, rpi->encrypted_room_key, ENCRYPTED_ROOM_KEY_LEN);
     off += ENCRYPTED_ROOM_KEY_LEN;
+
     memcpy(buf + off, rpi->tag, ROOM_TAG_LEN);
     off += ROOM_TAG_LEN;
+
+    memcpy(buf + off, rpi->verifier, ROOM_PASSWORD_VERIFIER_LEN);
+    off += ROOM_PASSWORD_VERIFIER_LEN;
 
     if (off != sizeof(buf))
     {
@@ -247,6 +256,7 @@ int build_pkt_room_password_rekey_payload(uint32_t room_id, RoomPasswordInfo* rp
 //     plaintext  = room_key,
 //     aad        = "room_password_v1" || room_id
 // )
+// [32 verifier]
 int parse_pkt_room_password_rekey_payload(uint8_t* msg, uint16_t msg_len, uint32_t* out_room_id,
                                           RoomPasswordInfo* rpi)
 {
@@ -279,6 +289,14 @@ int parse_pkt_room_password_rekey_payload(uint8_t* msg, uint16_t msg_len, uint32
     memcpy(rpi->tag, msg + off, ROOM_TAG_LEN);
     off += ROOM_TAG_LEN;
 
+    NEED(msg + off, end, ROOM_TAG_LEN);
+    memcpy(rpi->tag, msg + off, ROOM_TAG_LEN);
+    off += ROOM_TAG_LEN;
+
+    NEED(msg + off, end, ROOM_PASSWORD_VERIFIER_LEN);
+    memcpy(rpi->verifier, msg + off, ROOM_PASSWORD_VERIFIER_LEN);
+    off += ROOM_PASSWORD_VERIFIER_LEN;
+
     if (msg + off != end)
     {
         fprintf(stderr, "parse_pkt_room_create_password: off and msg_len differ\n");
@@ -306,6 +324,7 @@ cleanup:
 //     plaintext  = room_key,
 //     aad        = "room_password_v1" || room_id
 // )
+// [32 verifier]
 int parse_pkt_room_create_password(uint8_t* msg, uint16_t msg_len, uint32_t* out_room_id,
                                    RoomPasswordInfo* rpi)
 {
@@ -337,6 +356,10 @@ int parse_pkt_room_create_password(uint8_t* msg, uint16_t msg_len, uint32_t* out
     NEED(msg + off, end, ROOM_TAG_LEN);
     memcpy(rpi->tag, msg + off, ROOM_TAG_LEN);
     off += ROOM_TAG_LEN;
+
+    NEED(msg + off, end, ROOM_PASSWORD_VERIFIER_LEN);
+    memcpy(rpi->verifier, msg + off, ROOM_PASSWORD_VERIFIER_LEN);
+    off += ROOM_PASSWORD_VERIFIER_LEN;
 
     if (msg + off != end)
     {

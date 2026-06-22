@@ -393,7 +393,13 @@ int main(int argc, char** argv)
                             int      try_ret            = -99;
                             char     password[128]      = {0};
                             uint8_t* decrypted_room_key = OPENSSL_malloc(ROOM_KEY_LEN);
-                            int      unlocked           = 0;
+                            if (!decrypted_room_key)
+                            {
+                                ossl_print_error("OPENSSL_malloc");
+                                return -1;
+                            }
+                            int     unlocked = 0;
+                            uint8_t verifier[ROOM_PASSWORD_VERIFIER_LEN];
                             while (try_ret != 0)
                             {
                                 scanf("%127s", password);
@@ -427,17 +433,26 @@ int main(int argc, char** argv)
                                         fprintf(stderr, "[ERROR] save_room_session failed\n");
                                         break;
                                     }
+
+                                    if (get_verifier(mac_key, room_id, rpi.epoch, verifier) < 0)
+                                    {
+                                        fprintf(stderr, "[ERROR] get_verifier failed\n");
+                                        break;
+                                    }
+
                                     OPENSSL_cleanse(password, MAX_PASSWORD_LEN);
                                     OPENSSL_cleanse(decrypted_room_key, ROOM_KEY_LEN);
                                     OPENSSL_cleanse(enc_key, PASSWORD_KEY_LEN);
                                     OPENSSL_cleanse(mac_key, PASSWORD_KEY_LEN);
+                                    OPENSSL_clear_free(decrypted_room_key, ROOM_KEY_LEN);
                                     unlocked = 1;
                                     break;
                                 }
                             }
                             if (unlocked)
                             {
-                                if (client_send_pkt_room_unlock(epfd, c, room_id) < 0)
+                                if (client_send_pkt_room_unlock(epfd, c, room_id, rpi.epoch,
+                                                                verifier) < 0)
                                 {
                                     fprintf(stderr, "client_send_pkt_room_unlock failed\n");
                                     return -1;
@@ -610,7 +625,9 @@ int main(int argc, char** argv)
                         }
                         case PKT_ROOM_CREATE_OK:
                         {
-                            printf("[ROOM CREATE] Created room #%" PRIu32 "\n", h.room_id);
+                            printf("[ROOM CREATE] Created room #%" PRIu32 ". Use /join #%" PRIu32
+                                   " to enter\n",
+                                   h.room_id, h.room_id);
                             break;
                         }
                         case PKT_AUTH_CHALLENGE:

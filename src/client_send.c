@@ -76,6 +76,7 @@ int client_send_pkt_room_create(int epfd, Client* c, uint32_t room_id)
 //     plaintext  = room_key,
 //     aad        = "room_password_v1" || room_id
 // )
+// [32 verifier]
 int client_send_pkt_room_create_password(int epfd, Client* c, uint32_t room_id,
                                          char    password[MAX_PASSWORD_LEN],
                                          uint8_t plaintext_room_key[ROOM_KEY_LEN])
@@ -109,7 +110,11 @@ int client_send_pkt_room_create_password(int epfd, Client* c, uint32_t room_id,
     return 0;
 }
 
-int client_send_pkt_room_unlock(int epfd, Client* c, uint32_t room_id)
+// [4 room_id]
+// [8 epoch]
+// [32 verifier]
+int client_send_pkt_room_unlock(int epfd, Client* c, uint32_t room_id, uint64_t epoch,
+                                uint8_t verifier[ROOM_PASSWORD_VERIFIER_LEN])
 {
     if (!c)
     {
@@ -126,11 +131,23 @@ int client_send_pkt_room_unlock(int epfd, Client* c, uint32_t room_id)
     h.type       = PKT_ROOM_UNLOCK;
     h.version    = 1;
 
-    uint8_t msg[ROOM_ID_LEN];
+    size_t  off = 0;
+    uint8_t msg[PKT_ROOM_UNLOCK_PAYLOAD_LEN];
     put_u32_be(msg, room_id);
-    uint32_t msg_len = ROOM_ID_LEN;
+    off += ROOM_ID_LEN;
 
-    if (enqueue_packet(c, &h, msg, msg_len) < 0)
+    put_u64_be(msg + off, epoch);
+    off += EPOCH_LEN;
+
+    memcpy(msg + off, verifier, ROOM_PASSWORD_VERIFIER_LEN);
+    off += ROOM_PASSWORD_VERIFIER_LEN;
+
+    if (off != PKT_ROOM_UNLOCK_PAYLOAD_LEN)
+    {
+        return -1;
+    }
+
+    if (enqueue_packet(c, &h, msg, sizeof(msg)) < 0)
     {
         return -1;
     }

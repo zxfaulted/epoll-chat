@@ -1201,10 +1201,22 @@ int main()
                                     case PKT_ROOM_UNLOCK:
                                     {
                                         uint32_t room_id;
-                                        if (server_recv_pkt_room_unlock(msg, msg_len, &room_id) < 0)
+                                        uint64_t epoch;
+                                        uint8_t  verifier[ROOM_PASSWORD_VERIFIER_LEN];
+                                        memset(verifier, 0, ROOM_PASSWORD_VERIFIER_LEN);
+                                        if (server_recv_pkt_room_unlock(msg, msg_len, &room_id,
+                                                                        &epoch, verifier) < 0)
                                         {
                                             reject_packet(epfd, c, c->ei.fd, clients,
                                                           &clients_count, "PKT ROOM UNLOCK BAD",
+                                                          &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        if (room_id < 1 || room_id > MAX_ROOMS)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count, "ROOM ID BAD",
                                                           &message_id);
                                             client_removed = 1;
                                             break;
@@ -1250,6 +1262,24 @@ int main()
                                                 client_removed = 1;
                                                 break;
                                             }
+                                            break;
+                                        }
+
+                                        if (epoch != room->rpi.epoch)
+                                        {
+                                            disconnect_client(epfd, c, clients, &clients_count,
+                                                              &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+
+                                        if (CRYPTO_memcmp(room->rpi.verifier, verifier,
+                                                          ROOM_PASSWORD_VERIFIER_LEN) != 0)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count, "VERIFIERS DIFFER",
+                                                          &message_id);
+                                            client_removed = 1;
                                             break;
                                         }
 

@@ -146,6 +146,7 @@ int server_room_create_password(ServerRoom* rooms, uint16_t rooms_count, uint32_
             memcpy(rooms[i].rpi.nonce, rpi->nonce, ROOM_NONCE_LEN);
             memcpy(rooms[i].rpi.salt, rpi->salt, ROOM_SALT_LEN);
             memcpy(rooms[i].rpi.tag, rpi->tag, ROOM_TAG_LEN);
+            memcpy(rooms[i].rpi.verifier, rpi->verifier, ROOM_PASSWORD_VERIFIER_LEN);
             rooms[i].rpi.epoch    = rpi->epoch;
             rooms[i].has_password = 1;
             return i;
@@ -167,6 +168,7 @@ int server_room_update_metadata(ServerRoom* room, RoomPasswordInfo* rpi)
     memcpy(room->rpi.nonce, rpi->nonce, ROOM_NONCE_LEN);
     memcpy(room->rpi.salt, rpi->salt, ROOM_SALT_LEN);
     memcpy(room->rpi.tag, rpi->tag, ROOM_TAG_LEN);
+    memcpy(room->rpi.verifier, rpi->verifier, ROOM_PASSWORD_VERIFIER_LEN);
 
     return 0;
 }

@@ -14,7 +14,7 @@ int server_packet_allow(Client* c, PacketType type, AuthState auth)
         }
         case AUTH_SERVER_WAIT_REGISTER_RESPONSE:
         {
-            return type == PKT_AUTH_RESPONSE;
+            return type == PKT_REGISTER_RESPONSE;
         }
         case AUTH_SERVER_WAIT_AUTH_RESPONSE:
         {
@@ -39,6 +39,7 @@ int server_packet_allow(Client* c, PacketType type, AuthState auth)
                 case PKT_ROOM_CREATE_PASSWORD:
                 case PKT_ROOM_JOIN_BEGIN:
                 case PKT_ROOM_UNLOCK:
+                case PKT_ROOM_PASSWORD_REKEY:
                 {
                     return 1;
                 }

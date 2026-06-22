@@ -31,5 +31,7 @@ int encrypt_room_key_with_password_keys(uint32_t room_id, uint8_t enc_key[PASSWO
                                         uint8_t           mac_key[PASSWORD_KEY_LEN],
                                         uint8_t           plaintext_room_key[ROOM_KEY_LEN],
                                         RoomPasswordInfo* rpi);
+int get_verifier(uint8_t mac_key[ROOM_KEY_LEN], uint32_t room_id, uint64_t epoch,
+                 uint8_t out_verifier[ROOM_PASSWORD_VERIFIER_LEN]);
 
 #endif
