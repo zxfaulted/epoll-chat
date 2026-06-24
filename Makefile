@@ -43,15 +43,23 @@ SERVER := $(BIN_DIR)/server
 
 .PHONY: all deps clean run
 
-run: 
+# wmctrl -r WINDOW_TITLE -e 0,X,Y,WIDTH,HEIGHT
+run:
 	clear
 	$(MAKE) stop
 	$(MAKE) $(BIN_DIR)/client $(BIN_DIR)/server
-	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+910+10 -hold -e "./$(BIN_DIR)/server" &
-	sleep 1
-	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+10+10 -hold -e "./$(BIN_DIR)/client Alice" &
-	sleep 1
-	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+460+10 -hold -e "./$(BIN_DIR)/client Bob" &
+
+	kitty --title CHAT_SERVER sh -lc "./$(BIN_DIR)/server; echo; echo '[server exited]'; exec sh" 2>/dev/null &
+	sleep 0.7
+	wmctrl -r CHAT_SERVER -e 0,1410,40,400,420
+
+	kitty --title CHAT_ALICE sh -lc "./$(BIN_DIR)/client Alice; echo; echo '[Alice exited]'; exec sh" 2>/dev/null &
+	sleep 0.7
+	wmctrl -r CHAT_ALICE -e 0,100,40,650,420
+
+	kitty --title CHAT_BOB sh -lc "./$(BIN_DIR)/client Bob; echo; echo '[Bob exited]'; exec sh" 2>/dev/null &
+	sleep 0.7
+	wmctrl -r CHAT_BOB -e 0,755,40,650,420
 
 all: $(CLIENT) $(SERVER)
 
