@@ -346,7 +346,7 @@ int main(int argc, char** argv)
                                                 "[E2E] FAILED TO SEND OLD ROOM KEY TO PEEY\n");
                                         break;
                                     }
-                                    printf("[E2E] Sent old room key to joined #%" PRIu32 "",
+                                    printf("[E2E] Sent old room key to joined #%" PRIu32 "\n",
                                            joined_id);
                                     if (!am_room_leader(c, ue))
                                     {

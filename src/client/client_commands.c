@@ -320,6 +320,9 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
                 fprintf(stderr, "enqueue_packet failed\n");
                 return -1;
             }
+            printf("\033[1A"); // подняться на 1 строку вверх
+            printf("\033[2K"); // очистить всю строку
+            fflush(stdout);
             printf("[room #%" PRIu32 "] %s: %s\n", c->room_id, c->name, out_buf);
             if (set_epollout_to_client(epfd, c) < 0)
             {

@@ -393,7 +393,7 @@ int send_room_key_to_peer(int epfd, Client* c, uint32_t peer_id, uint8_t* wrappi
     h.version    = 1;
     h.timestamp  = (uint64_t)time(NULL);
 
-    if (e2e_wrap_room_key(c->id, peer_id, room->room_id, room->epoch, room->enc_key, room->room_key,
+    if (e2e_wrap_room_key(c->id, peer_id, room->room_id, room->epoch, wrapping_key, room->room_key,
                           cipher_p, tag_p, nonce_p) < 0)
     {
         fprintf(stderr, "e2e_wrap_room_key failed\n");
