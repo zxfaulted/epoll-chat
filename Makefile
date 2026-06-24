@@ -7,23 +7,24 @@ OBJ_DIR := obj
 BIN_DIR := bin
 SRC_DIR := src
 
-SRC := $(wildcard $(SRC_DIR)/*.c)
+SRC := $(shell find $(SRC_DIR) -name '*.c')
 OBJ := $(SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
           -Iinclude \
           -I$(OPENSSL_PREFIX)/include \
-          -D_POSIX_C_SOURCE=200809L \
-		  #-g
+          -D_POSIX_C_SOURCE=200809L 
+
+#CFLAGS += -g -O0
 
 DEPFLAGS := -MMD -MP
-DEP := $(OBJ.o=.d)
+DEP := $(OBJ:.o=.d)
 
 LDFLAGS := -L$(OPENSSL_LIBDIR) -Wl,-rpath,'$$ORIGIN/lib'
 LDLIBS := -lssl -lcrypto
 
-CLIENT_SRC := $(SRC_DIR)/client.c
-SERVER_SRC := $(SRC_DIR)/server.c
+CLIENT_SRC := $(SRC_DIR)/main/client.c
+SERVER_SRC := $(SRC_DIR)/main/server.c
 
 COMMON_SRC := $(filter-out $(CLIENT_SRC) $(SERVER_SRC), $(SRC))
 
@@ -31,11 +32,14 @@ COMMON_OBJS := \
 	$(COMMON_SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
 
+CLIENT_OBJ := $(CLIENT_SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+SERVER_OBJ := $(SERVER_SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+
+CLIENT_OBJS := $(CLIENT_OBJ) $(COMMON_OBJS)
+SERVER_OBJS := $(SERVER_OBJ) $(COMMON_OBJS)
+
 CLIENT := $(BIN_DIR)/client
 SERVER := $(BIN_DIR)/server
-CLIENT_OBJS := $(OBJ_DIR)/client.o $(COMMON_OBJS)
-SERVER_OBJS := $(OBJ_DIR)/server.o $(COMMON_OBJS)
-
 
 .PHONY: all deps clean run
 
@@ -49,7 +53,7 @@ run:
 	sleep 1
 	xterm -xrm 'XTerm*selectToClipboard: true' -geometry 70x20+460+10 -hold -e "./$(BIN_DIR)/client Bob" &
 
-all: $(BIN_DIR)/client $(BIN_DIR)/server
+all: $(CLIENT) $(SERVER)
 
 
 stop:
@@ -66,6 +70,7 @@ $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(CLIENT): $(CLIENT_OBJS) | $(BIN_DIR)
