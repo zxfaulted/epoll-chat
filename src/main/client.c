@@ -80,11 +80,6 @@ int main(int argc, char** argv)
     {
         default_name = argv[1];
     }
-    // else
-    // {
-    //     printf("ENTER YOUR NAME LIKE './client NAME'\n");
-    //     return -1;
-    // }
 
     OSSL_PROVIDER* dflt = NULL;
     OSSL_PROVIDER* gost = NULL;
@@ -289,17 +284,9 @@ int main(int argc, char** argv)
                             }
 
                             stdin_line[stdin_line_len] = '\0';
-                            stdin_line[stdin_line_len] = '\0';
-
-                            stdin_line[stdin_line_len] = '\0';
 
                             if (awaiting_create_room_password)
                             {
-                                /*
-                                 * Пароль для СОЗДАНИЯ комнаты.
-                                 * Тут НЕ должно быть try_decrypt_room_key_ex.
-                                 */
-
                                 if (strcmp(stdin_line, "exit") == 0)
                                 {
                                     awaiting_create_room_password = 0;
@@ -691,7 +678,7 @@ int main(int argc, char** argv)
                                                               peer->wrapping_key, room) < 0)
                                     {
                                         fprintf(stderr,
-                                                "[E2E] FAILED TO SEND OLD ROOM KEY TO PEEY\n");
+                                                "[E2E] FAILED TO SEND OLD ROOM KEY TO PEER\n");
                                         break;
                                     }
                                     ui_print_e2e("Sent old room key to joined #%" PRIu32,

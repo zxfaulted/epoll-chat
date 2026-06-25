@@ -754,6 +754,7 @@ int main()
                                     client_removed = 1;
                                     break;
                                 }
+                                break;
                             }
                             // 1. Проверить размер payload.
                             if (msg_len == 0)
@@ -1286,6 +1287,7 @@ int main()
                                             reject_packet(epfd, c, c->ei.fd, clients,
                                                           &clients_count, "UNLOCK ROOM MISMATCH",
                                                           server_rooms, MAX_ROOMS, &message_id);
+                                            client_removed = 1;
                                             break;
                                         }
                                         if (room_id < 1 || room_id > MAX_ROOMS)
