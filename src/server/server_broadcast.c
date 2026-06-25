@@ -10,7 +10,8 @@
 #include <string.h>
 
 void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* clients_count,
-                       const uint8_t msg[], uint32_t len, uint32_t* message_id)
+                       const uint8_t msg[], uint32_t len, ServerRoom* server_rooms,
+                       uint32_t rooms_count, uint32_t* message_id)
 {
 
     int i = 0;
@@ -41,7 +42,8 @@ void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* c
         if (set_epollout_to_client(epfd, clients[i]) < 0)
         {
             perror("set_epollout_to_client");
-            disconnect_client(epfd, clients[i], clients, clients_count, message_id);
+            disconnect_client(epfd, clients[i], clients, clients_count, server_rooms, rooms_count,
+                              message_id);
             continue;
         }
         i++;
@@ -49,7 +51,8 @@ void broadcast_message(int epfd, Client* c, Header* h, Client* clients[], int* c
 }
 
 void broadcast_user_event(int epfd, Client* skip, uint32_t room_id, Client* clients[],
-                          int* clients_count, PacketType type, uint32_t* message_id)
+                          int* clients_count, PacketType type, ServerRoom* server_rooms,
+                          uint32_t rooms_count, uint32_t* message_id)
 {
     if (!skip || !clients || !clients_count || !message_id)
     {
@@ -89,7 +92,8 @@ void broadcast_user_event(int epfd, Client* skip, uint32_t room_id, Client* clie
         if (set_epollout_to_client(epfd, clients[i]) < 0)
         {
             perror("set_epollout_to_client");
-            disconnect_client(epfd, clients[i], clients, clients_count, message_id);
+            disconnect_client(epfd, clients[i], clients, clients_count, server_rooms, rooms_count,
+                              message_id);
             continue;
         }
         i++;

@@ -13,6 +13,7 @@
 #include "storage/pem_io.h"
 #include "transport/epoll_io.h"
 #include "transport/packet_io.h"
+#include "ui/ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -170,7 +171,7 @@ int init_key_bundle(KeyBundle* kb, uint32_t client_id, EVP_PKEY* private_key, co
     pem_read_public_key(path, &identity_pub_evp);
     if (identity_pub_evp == NULL)
     {
-        fprintf(stderr, "[ERROR] pem_read_public_key FAULTED");
+        ui_print_error("pem_read_public_key FAULTED");
         ret = -1;
         goto cleanup;
     }
@@ -178,7 +179,7 @@ int init_key_bundle(KeyBundle* kb, uint32_t client_id, EVP_PKEY* private_key, co
     uint16_t identity_pub_len = 0;
     if (key_to_der_pub(identity_pub_evp, &identity_pub_der, &identity_pub_len) < 0)
     {
-        fprintf(stderr, "[ERROR] key_to_der_pub  FAULTED");
+        ui_print_error("key_to_der_pub  FAULTED");
         ret = -1;
         goto cleanup;
     }
@@ -191,13 +192,13 @@ int init_key_bundle(KeyBundle* kb, uint32_t client_id, EVP_PKEY* private_key, co
     pem_read_public_key(path, &vko_pub_evp);
     if (vko_pub_evp == NULL)
     {
-        fprintf(stderr, "[ERROR] pem_read_public_key FAULTED");
+        ui_print_error("pem_read_public_key FAULTED");
         ret = -1;
         goto cleanup;
     }
     if (key_to_der_pub(vko_pub_evp, &vko_pub_der, &vko_pub_len) < 0)
     {
-        fprintf(stderr, "[ERROR] key_to_der_pub  FAULTED");
+        ui_print_error("key_to_der_pub  FAULTED");
         ret = -1;
         goto cleanup;
     }
@@ -210,7 +211,7 @@ int init_key_bundle(KeyBundle* kb, uint32_t client_id, EVP_PKEY* private_key, co
     if (get_hash(FA_GOST2012_512, kb->identity_pub, kb->identity_pub_len, &fingerprint,
                  &fingerprint_len) < 0)
     {
-        fprintf(stderr, "[ERROR] get_fingerprint FAULTED");
+        ui_print_error("get_fingerprint FAULTED");
         ret = -1;
         goto cleanup;
     }
@@ -221,13 +222,13 @@ int init_key_bundle(KeyBundle* kb, uint32_t client_id, EVP_PKEY* private_key, co
     kb->signature_alg = SigA_512;
     if (get_sign_kb(kb, private_key, &signature, &signature_len) < 0)
     {
-        fprintf(stderr, "[ERROR] get_sign_kb FAULTED");
+        ui_print_error("get_sign_kb FAULTED");
         ret = -1;
         goto cleanup;
     }
     if (signature_len > UINT16_MAX)
     {
-        fprintf(stderr, "[ERROR] signature_len too large\n");
+        ui_print_error("signature_len too large");
         ret = -1;
         goto cleanup;
     }
@@ -880,7 +881,8 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
         fprintf(stderr, "get_kdf failed\n");
         goto cleanup;
     }
-    printf("[E2E] saved wrapping key for peer#%" PRIu32 "\n", kb->client_id);
+
+    ui_print_e2e("Saved wrapping key for peer#%" PRIu32, kb->client_id);
 
     if (c->room_state == ROOM_READY && user_entry_exists(ue, kb->client_id) &&
         am_room_leader(c, ue))
@@ -901,8 +903,8 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
                 goto cleanup;
             }
 
-            printf("[E2E] I am leader. Sent room key to peer#%" PRIu32 ", epoch=%" PRIu64 "\n",
-                   kb->client_id, get_room_epoch(room));
+            ui_print_e2e("I am leader. Sent room key to peer#%" PRIu32 ", epoch=%" PRIu64 "",
+                         kb->client_id, get_room_epoch(room));
         }
     }
     ret = 0;

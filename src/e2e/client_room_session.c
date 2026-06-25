@@ -9,6 +9,7 @@
 #include "protocol/wire.h"
 #include "transport/epoll_io.h"
 #include "transport/packet_io.h"
+#include "ui/ui.h"
 
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
@@ -56,10 +57,7 @@ int save_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id, 
                     fprintf(stderr, "same epoch but wrong key\n");
                     return -1;
                 }
-                else
-                {
-                    return 0;
-                }
+                return 0;
             }
             else
             {
@@ -87,8 +85,11 @@ int save_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id, 
     slot->room_id = room_id;
     slot->epoch   = epoch;
     memcpy(slot->room_key, room_key, ROOM_KEY_LEN);
-    slot->send_seq = 1;
-    slot->used     = 1;
+    slot->send_seq               = 1;
+    slot->used                   = 1;
+    slot->has_key                = 1;
+    slot->has_password           = 0;
+    slot->has_password_wrap_keys = 0;
     return 0;
 }
 int save_password_room_session(RoomSession* rooms, size_t rooms_count, uint32_t room_id,
@@ -108,6 +109,7 @@ int save_password_room_session(RoomSession* rooms, size_t rooms_count, uint32_t 
         {
             if (rooms[i].epoch > epoch)
             {
+                OPENSSL_cleanse(room_key, ROOM_KEY_LEN);
                 return -1;
             }
             else if (rooms[i].epoch == epoch)
@@ -115,10 +117,18 @@ int save_password_room_session(RoomSession* rooms, size_t rooms_count, uint32_t 
                 if (memcmp(rooms[i].room_key, room_key, ROOM_KEY_LEN) != 0)
                 {
                     fprintf(stderr, "same epoch but wrong key\n");
+                    OPENSSL_cleanse(room_key, ROOM_KEY_LEN);
                     return -1;
                 }
                 else
                 {
+                    memcpy(rooms[i].enc_key, enc_key, PASSWORD_KEY_LEN);
+                    memcpy(rooms[i].mac_key, mac_key, PASSWORD_KEY_LEN);
+                    memcpy(rooms[i].salt, salt, ROOM_SALT_LEN);
+
+                    rooms[i].has_key                = 1;
+                    rooms[i].has_password           = 1;
+                    rooms[i].has_password_wrap_keys = 1;
                     return 0;
                 }
             }
@@ -142,16 +152,18 @@ int save_password_room_session(RoomSession* rooms, size_t rooms_count, uint32_t 
     }
     if (!slot)
     {
+        OPENSSL_cleanse(room_key, ROOM_KEY_LEN);
         return -1;
     }
     OPENSSL_cleanse(slot, sizeof(*slot));
     slot->room_id = room_id;
     slot->epoch   = epoch;
     memcpy(slot->room_key, room_key, ROOM_KEY_LEN);
-    slot->send_seq                = 1;
-    slot->used                    = 1;
-    slot->has_password            = 1;
-    slot->has_passsword_wrap_keys = 1;
+    slot->send_seq               = 1;
+    slot->used                   = 1;
+    slot->has_password           = 1;
+    slot->has_password_wrap_keys = 1;
+    slot->has_key                = 1;
     memcpy(slot->enc_key, enc_key, PASSWORD_KEY_LEN);
     memcpy(slot->mac_key, mac_key, PASSWORD_KEY_LEN);
     memcpy(slot->salt, salt, ROOM_SALT_LEN);
@@ -201,9 +213,14 @@ int am_room_leader(const Client* c, const UserEntry* ue)
 
 int create_room_key(RoomSession* rooms, size_t count, uint32_t room_id)
 {
-    RoomSession* old_room   = get_room_session(rooms, count, room_id);
-    uint64_t     next_epoch = old_room ? old_room->epoch + 1 : 1;
-    uint8_t      key[ROOM_KEY_LEN];
+    RoomSession* old_room = get_room_session(rooms, count, room_id);
+    if (old_room && old_room->has_password)
+    {
+        fprintf(stderr, "create_room_key called for password room\n");
+        return -1;
+    }
+    uint64_t next_epoch = old_room ? old_room->epoch + 1 : 1;
+    uint8_t  key[ROOM_KEY_LEN];
     if (RAND_bytes(key, sizeof(key)) != 1)
     {
         ossl_print_error("RAND_bytes");
@@ -216,7 +233,7 @@ int create_room_key(RoomSession* rooms, size_t count, uint32_t room_id)
     }
 
     OPENSSL_cleanse(key, sizeof(key));
-    printf("[E2E] key added successfully for room #%" PRIu32 "\n", room_id);
+    ui_print_e2e("Key added successfully for room #%" PRIu32, room_id);
 
     return 0;
 }
@@ -312,7 +329,8 @@ int send_room_key_to_known_peers(int epfd, Client* c, PeerWrapSession* peers, si
 
         if (!peer)
         {
-            continue;
+            ui_print_e2e("no wrapping key for peer#%" PRIu32 "; cannot rekey yet", ue[i].id);
+            return -1;
         }
 
         if (send_room_key_to_peer(epfd, c, ue[i].id, peer->wrapping_key, room) < 0)
@@ -322,8 +340,7 @@ int send_room_key_to_known_peers(int epfd, Client* c, PeerWrapSession* peers, si
         }
 
         queued = 1;
-        printf("[E2E] sent room key to peer#%" PRIu32 ", epoch=%" PRIu64 "\n", ue[i].id,
-               room->epoch);
+        ui_print_e2e("sent room key to peer#%" PRIu32 ", epoch=%" PRIu64, ue[i].id, room->epoch);
     }
 
     if (queued && set_epollout_to_client(epfd, c) < 0)
@@ -438,16 +455,33 @@ int handle_room_key(Client* c, PeerWrapSession* peers, RoomSession* rooms, Heade
         fprintf(stderr, "kuznechik_decrypt_room_key failed\n");
         goto cleanup;
     }
-    RoomSession* old_room = get_room_session(rooms, MAX_ROOMS, h->room_id);
+    RoomSession* old_room          = get_room_session(rooms, MAX_ROOMS, h->room_id);
+    int          was_password_room = 0;
+
+    uint8_t saved_password_enc_key[PASSWORD_KEY_LEN];
+    uint8_t saved_password_mac_key[PASSWORD_KEY_LEN];
+    uint8_t saved_password_salt[ROOM_SALT_LEN];
+
+    memset(saved_password_enc_key, 0, sizeof(saved_password_enc_key));
+    memset(saved_password_mac_key, 0, sizeof(saved_password_mac_key));
+    memset(saved_password_salt, 0, sizeof(saved_password_salt));
+
+    if (old_room && old_room->has_password)
+    {
+        was_password_room = 1;
+
+        memcpy(saved_password_enc_key, old_room->enc_key, PASSWORD_KEY_LEN);
+        memcpy(saved_password_mac_key, old_room->mac_key, PASSWORD_KEY_LEN);
+        memcpy(saved_password_salt, old_room->salt, ROOM_SALT_LEN);
+    }
 
     if (old_room && old_room->epoch == epoch)
     {
         if (memcmp(old_room->room_key, decrypted_room_key, ROOM_KEY_LEN) == 0)
         {
 
-            // дубль уже принятого room key.
-            // не ошибка и не новый ключ.
-
+            // дубль уже принятого room key
+            // не ошибка и не новый ключ
             ret = ROOM_KEY_IGNORED;
             goto cleanup;
         }
@@ -457,19 +491,37 @@ int handle_room_key(Client* c, PeerWrapSession* peers, RoomSession* rooms, Heade
     }
     else if (old_room && old_room->epoch > epoch)
     {
-        fprintf(stderr, "old epoch\n");
+        // старый ключ мог прийти позже из очереди
+        // не ошибка протокола
+        ret = ROOM_KEY_IGNORED;
         goto cleanup;
     }
-    if (save_room_session(rooms, MAX_ROOMS, h->room_id, epoch, decrypted_room_key) < 0)
+    if (was_password_room)
     {
-        fprintf(stderr, "save_room_session failed\n");
-        goto cleanup;
+        if (save_password_room_session(rooms, MAX_ROOMS, h->room_id, saved_password_enc_key,
+                                       saved_password_mac_key, saved_password_salt, epoch,
+                                       decrypted_room_key) < 0)
+        {
+            fprintf(stderr, "save_password_room_session failed\n");
+            goto cleanup;
+        }
     }
-    printf("[E2E] Got room key for room #%" PRIu32 ", epoch=%" PRIu64 ", from peer#%" PRIu32 "\n",
-           h->room_id, epoch, h->sender_id);
+    else
+    {
+        if (save_room_session(rooms, MAX_ROOMS, h->room_id, epoch, decrypted_room_key) < 0)
+        {
+            fprintf(stderr, "save_room_session failed\n");
+            goto cleanup;
+        }
+    }
+    ui_print_e2e("Got room key for room #%" PRIu32 ", epoch=%" PRIu64 ", from peer#%" PRIu32,
+                 h->room_id, epoch, h->sender_id);
     ret = ROOM_KEY_ACCEPTED;
 cleanup:
     OPENSSL_clear_free(decrypted_room_key, ROOM_KEY_LEN);
+    OPENSSL_cleanse(saved_password_enc_key, sizeof(saved_password_enc_key));
+    OPENSSL_cleanse(saved_password_mac_key, sizeof(saved_password_mac_key));
+    OPENSSL_cleanse(saved_password_salt, sizeof(saved_password_salt));
     OPENSSL_cleanse(aad, AAD_LEN);
     OPENSSL_cleanse(mac_key, 32);
     OPENSSL_cleanse(enc_key, 32);
@@ -485,7 +537,7 @@ cleanup:
 // [16 nonce]
 // [N  ciphertext]
 // [16 tag]
-int check_recv_seq(RoomSession* room, uint64_t peer_id, uint64_t recv_seq)
+int check_recv_seq(RoomSession* room, uint32_t peer_id, uint64_t recv_seq)
 {
     RoomPeerRecvState* slot = NULL;
     for (size_t i = 0; i < MAX_CLIENTS; i++)
@@ -518,7 +570,7 @@ int check_recv_seq(RoomSession* room, uint64_t peer_id, uint64_t recv_seq)
 
     if (slot->seq >= recv_seq)
     {
-        fprintf(stderr, "replay detected for peer#%" PRIu64 "\n", peer_id);
+        fprintf(stderr, "replay detected for peer#%" PRIu32 "\n", peer_id);
         return -1;
     }
     slot->seq = recv_seq;
@@ -529,10 +581,11 @@ int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uin
                                 RoomSession* rooms, uint16_t rooms_count, UserEntry* ue,
                                 uint32_t room_id)
 {
+    int          ret  = -1;
     RoomSession* room = find_room_session(rooms, rooms_count, room_id);
     if (!room)
     {
-        return -1;
+        return ret;
     }
 
     uint64_t new_epoch = room->epoch + 1;
@@ -542,7 +595,7 @@ int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uin
     if (RAND_bytes(new_room_key, ROOM_KEY_LEN) != 1)
     {
         ossl_print_error("RAND_bytes");
-        return -1;
+        goto cleanup;
     }
 
     RoomPasswordInfo rpi;
@@ -554,7 +607,7 @@ int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uin
     if (RAND_bytes(nonce, ROOM_NONCE_LEN) != 1)
     {
         ossl_print_error("RAND_bytes");
-        return -1;
+        goto cleanup;
     }
     memcpy(&rpi.salt, room->salt, ROOM_SALT_LEN);
     memcpy(&rpi.nonce, nonce, ROOM_NONCE_LEN);
@@ -564,35 +617,44 @@ int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uin
                                             &rpi) < 0)
     {
         fprintf(stderr, "encrypt_room_key_with_password_keys\n");
-        return -1;
+        goto cleanup;
     }
 
     if (get_verifier(room->mac_key, room_id, rpi.epoch, rpi.verifier) < 0)
     {
         fprintf(stderr, "get_verifier failed\n");
-        OPENSSL_cleanse(new_room_key, ROOM_KEY_LEN);
-        return -1;
+        goto cleanup;
     }
 
-    if (save_password_room_session(rooms, rooms_count, room_id, room->enc_key, room->mac_key,
-                                   room->salt, new_epoch, new_room_key) < 0)
+    uint8_t enc_key[PASSWORD_KEY_LEN];
+    uint8_t mac_key[PASSWORD_KEY_LEN];
+    uint8_t salt[ROOM_SALT_LEN];
+
+    memcpy(enc_key, room->enc_key, PASSWORD_KEY_LEN);
+    memcpy(mac_key, room->mac_key, PASSWORD_KEY_LEN);
+    memcpy(salt, room->salt, ROOM_SALT_LEN);
+
+    if (save_password_room_session(rooms, rooms_count, room_id, enc_key, mac_key, salt, new_epoch,
+                                   new_room_key) < 0)
     {
-        return -1;
+        goto cleanup;
     }
     if (client_send_password_room_rekey(epfd, c, &rpi) < 0)
     {
-        return -1;
+        goto cleanup;
     }
 
     if (send_room_key_to_known_peers(epfd, c, peers, peers_count, rooms, rooms_count, ue) < 0)
     {
         fprintf(stderr, "send_room_key_to_known_peers failed\n");
-        return -1;
+        goto cleanup;
     }
 
     c->room_state = ROOM_READY;
+    ret           = 0;
+cleanup:
     OPENSSL_cleanse(new_room_key, ROOM_KEY_LEN);
-    return 0;
+    return ret;
 }
 
 int rekey_current_room_auto(int epfd, Client* c, PeerWrapSession* peers, uint16_t peers_count,
@@ -624,4 +686,9 @@ int validate_room_join(RoomSession* rooms, uint32_t room_id)
     {
         return 0;
     }
+}
+
+void clear_room_session(RoomSession* room)
+{
+    OPENSSL_cleanse(room, sizeof(*room));
 }

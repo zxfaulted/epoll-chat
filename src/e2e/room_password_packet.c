@@ -289,10 +289,6 @@ int parse_pkt_room_password_rekey_payload(uint8_t* msg, uint16_t msg_len, uint32
     memcpy(rpi->tag, msg + off, ROOM_TAG_LEN);
     off += ROOM_TAG_LEN;
 
-    NEED(msg + off, end, ROOM_TAG_LEN);
-    memcpy(rpi->tag, msg + off, ROOM_TAG_LEN);
-    off += ROOM_TAG_LEN;
-
     NEED(msg + off, end, ROOM_PASSWORD_VERIFIER_LEN);
     memcpy(rpi->verifier, msg + off, ROOM_PASSWORD_VERIFIER_LEN);
     off += ROOM_PASSWORD_VERIFIER_LEN;

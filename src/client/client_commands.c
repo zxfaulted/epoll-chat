@@ -8,6 +8,7 @@
 #include "e2e/room_crypto.h"
 #include "transport/epoll_io.h"
 #include "transport/packet_io.h"
+#include "ui/ui.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -19,7 +20,8 @@
 // -1 критичная ошибка, закрыть клиент
 int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, char* out_buf,
                  ssize_t bytes, const char* default_name, int* registration_in_progress,
-                 int* generated_keys_for_registration)
+                 int* generated_keys_for_registration, int* awaiting_create_room_password,
+                 uint32_t* pending_password_room_id)
 {
     Header h;
     memset(&h, 0, sizeof(h));
@@ -37,25 +39,40 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
     }
     if (strcmp(out_buf, "/help") == 0)
     {
-        print_help(c);
+        print_help(c, default_name);
         return 0;
     }
 
     if (c->auth_state == AUTH_NEW)
     {
+        if (strcmp(out_buf, "1") == 0)
+        {
+            snprintf(out_buf, BUF_SIZE, "/login");
+        }
+
+        if (strcmp(out_buf, "2") == 0)
+        {
+            snprintf(out_buf, BUF_SIZE, "/register");
+        }
+
+        if (strcmp(out_buf, "3") == 0)
+        {
+            ui_print_help_logged_out(default_name);
+            return 0;
+        }
         if (strncmp(out_buf, "/register ", 10) == 0)
         {
             const char* reg_name = out_buf + 10;
 
             if (reg_name[0] == '\0')
             {
-                printf("[ERROR] Usage: /register NAME\n");
+                ui_print_error("Usage: /register NAME");
                 return 0;
             }
 
             if (strlen(reg_name) > MAX_NAME_LEN)
             {
-                printf("[ERROR] NAME IS TOO LONG\n");
+                ui_print_error("NAME IS TOO LONG");
                 return 0;
             }
 
@@ -65,7 +82,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
             {
                 if (load_keys_for_name(gk, reg_name) < 0)
                 {
-                    printf("[ERROR] Failed to load local keys for '%s'\n", reg_name);
+                    ui_print_error("Failed to load local keys for '%s'", reg_name);
                     return 0;
                 }
 
@@ -88,7 +105,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
         {
             if (strlen(default_name) > MAX_NAME_LEN)
             {
-                printf("[ERROR] NAME IS TOO LONG\n");
+                ui_print_error("NAME IS TOO LONG");
                 return 0;
             }
 
@@ -98,7 +115,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
             {
                 if (load_keys_for_name(gk, default_name) < 0)
                 {
-                    printf("[ERROR] Failed to load local keys for '%s'\n", default_name);
+                    ui_print_error("Failed to load local keys for '%s'", default_name);
                     return 0;
                 }
 
@@ -116,26 +133,26 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
 
             if (login_name[0] == '\0')
             {
-                printf("[ERROR] Usage: /login NAME\n");
+                ui_print_error("Usage: /login NAME\n");
                 return 0;
             }
 
             if (strlen(login_name) > MAX_NAME_LEN)
             {
-                printf("[ERROR] NAME IS TOO LONG\n");
+                ui_print_error("NAME IS TOO LONG\n");
                 return 0;
             }
 
             if (keys_exist(login_name) != 1)
             {
-                printf("[ERROR] No local keys for '%s'. Use /register %s first.\n", login_name,
-                       login_name);
+                ui_print_error("No local keys for '%s'. Use /register %s first.", login_name,
+                               login_name);
                 return 0;
             }
 
             if (load_keys_for_name(gk, login_name) < 0)
             {
-                printf("[ERROR] Failed to load local keys for '%s'\n", login_name);
+                ui_print_error("Failed to load local keys for '%s'", login_name);
                 return 0;
             }
 
@@ -149,14 +166,14 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
         {
             if (keys_exist(default_name) != 1)
             {
-                printf("[ERROR] No local keys for '%s'. Use /register %s first.\n", default_name,
-                       default_name);
+                ui_print_error("No local keys for '%s'. Use /register %s first.\n", default_name,
+                               default_name);
                 return 0;
             }
 
             if (load_keys_for_name(gk, default_name) < 0)
             {
-                printf("[ERROR] Failed to load local keys for '%s'\n", default_name);
+                ui_print_error("Failed to load local keys for '%s'\n", default_name);
                 return 0;
             }
 
@@ -168,14 +185,14 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
 
         if (out_buf[0] == '/')
         {
-            printf("[ERROR] Unknown command: %s\n", out_buf);
-            printf("[LOCAL] Type /help to see supported commands.\n");
+            ui_print_error("Unknown command: %s", out_buf);
+            ui_print_local("Type /help to see supported commands.");
             return 0;
         }
 
-        printf("[LOCAL] Message was not sent. You are not logged in.\n");
-        printf("[LOCAL] Use '/login NAME' or '/register NAME'.\n");
-        printf("[LOCAL] Use '/login' or '/register' to use your %s.\n", default_name);
+        ui_print_local("Message was not sent. You are not logged in.");
+        ui_print_local("Use '/login NAME' or '/register NAME'.");
+        ui_print_local("Use '/login' or '/register' to use name '%s'.", default_name);
         return 0;
     }
 
@@ -183,11 +200,11 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
     {
         if (out_buf[0] == '/')
         {
-            printf("[LOCAL] Command cannot be used right now. Waiting for server response.\n");
+            ui_print_local("Command cannot be used right now. Waiting for server response.");
         }
         else
         {
-            printf("[LOCAL] Message was not sent. You are not ready yet.\n");
+            ui_print_local("Message was not sent. You are not ready yet.");
         }
 
         return 0;
@@ -201,38 +218,43 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
         }
         if (bytes > PAYLOAD_SIZE)
         {
-            printf("[ERROR] MESSAGE TOO LONG\n");
+            ui_print_error("MESSAGE TOO LONG\n");
             return 0;
         }
         if (strncmp("/join ", out_buf, 6) == 0)
         {
+            if (c->room_state != ROOM_READY)
+            {
+                ui_print_local("Cannot join now. Current room is not ready.");
+                return 0;
+            }
             errno = 0;
             char*         end;
             unsigned long room_id = strtoul(out_buf + 6, &end, 0);
             if (*end != '\0')
             {
-                printf("[ERROR] INVALID ROOM ID\n");
+                ui_print_error("INVALID ROOM ID\n");
                 return 0;
             }
             if (end == out_buf + 6)
             {
-                printf("[ERROR] ROOM ID IS NOT A NUMBER\n");
+                ui_print_error("ROOM ID IS NOT A NUMBER\n");
                 return 0;
             }
             if (errno == ERANGE)
             {
-                printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
+                ui_print_error("ROOM ID IS OUT OF RANGE\n");
                 return 0;
             }
             if (room_id < 1 || room_id > MAX_ROOMS)
             {
-                printf("[ERROR] INVALID ROOM ID\n");
+                ui_print_error("INVALID ROOM ID\n");
                 return 0;
             }
 
             if ((uint32_t)room_id == c->room_id)
             {
-                printf("[LOCAL] You are already in room #%" PRIu32 "\n", c->room_id);
+                ui_print_local("You are already in room #%" PRIu32 "", c->room_id);
                 return 0;
             }
             if (client_send_pkt_room_join_begin(epfd, c, room_id) < 0)
@@ -243,61 +265,81 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
             return 0;
         }
 
-        else if (strncmp(out_buf, "/create_room_password", 21) == 0)
+        else if (strcmp(out_buf, "/create_room_password") == 0)
         {
-            uint32_t room_id;
-            char     password[128];
-            int n = sscanf(out_buf, "/create_room_password %" PRIu32 " %127s", &room_id, password);
-            if (n != 2)
+            ui_print_error("USAGE: /create_room_password ROOM_ID");
+            return 0;
+        }
+
+        else if (strncmp(out_buf, "/create_room_password ", 22) == 0)
+        {
+            if (c->room_state != ROOM_READY)
             {
-                printf("[ERROR] NUMBER OF ARGUMENTS MUST BE 2\n");
+                ui_print_local("Cannot create room now. Current room is not ready.");
                 return 0;
             }
-            if (room_id < 1 || room_id > MAX_ROOMS)
+            errno = 0;
+
+            char*         end     = NULL;
+            unsigned long room_id = strtoul(out_buf + 22, &end, 10);
+
+            if (end == out_buf + 22 || *end != '\0')
             {
-                printf("[ERROR] ROOM ID IS OUT OF RANGE: %" PRIu32 "\n", room_id);
+                ui_print_error("ROOM ID IS NOT A NUMBER");
                 return 0;
             }
-            size_t password_len = strlen(password);
-            if (password_len > MAX_PASSWORD_LEN)
+
+            if (errno == ERANGE || room_id < 1 || room_id > MAX_ROOMS)
             {
-                fprintf(stderr, "MAXIMUM PASSWORD LENGTH IS 128 SYMBOLS\n");
+                ui_print_error("ROOM ID IS OUT OF RANGE");
                 return 0;
             }
-            if (password_len < MIN_PASSWORD_LEN)
+
+            if (!awaiting_create_room_password || !pending_password_room_id)
             {
-                fprintf(stderr, "MINIMUM PASSWORD LENGTH IS 4 SYMBOLS\n");
-                return 0;
-            }
-            uint8_t room_key[ROOM_KEY_LEN];
-            if (RAND_bytes(room_key, ROOM_KEY_LEN) != 1)
-            {
-                ossl_print_error("RAND_BYTES");
+                ui_print_error("INTERNAL ERROR: password create state is NULL");
                 return -1;
             }
 
-            int ret = -1;
-            ret     = client_send_pkt_room_create_password(epfd, c, room_id, password, room_key);
-            OPENSSL_cleanse(room_key, ROOM_KEY_LEN);
-            return ret;
+            *awaiting_create_room_password = 1;
+            *pending_password_room_id      = (uint32_t)room_id;
+
+            ui_print_local("Please enter password for new room %" PRIu32 " or 'exit' to cancel:",
+                           (uint32_t)room_id);
+
+            return 0;
         }
 
-        else if (strncmp(out_buf, "/create_room", 12) == 0)
+        else if (strncmp(out_buf, "/create_room ", 13) == 0)
         {
-            const char* p_room_id = out_buf + 13;
-            uint32_t    room_id   = atoi(p_room_id);
-            if (room_id < 1 || room_id > MAX_ROOMS)
+            if (c->room_state != ROOM_READY)
             {
-                printf("[ERROR] ROOM ID IS OUT OF RANGE\n");
+                ui_print_local("Cannot create room now. Current room is not ready.");
                 return 0;
             }
-            return client_send_pkt_room_create(epfd, c, room_id);
+            errno                 = 0;
+            char*         end     = NULL;
+            unsigned long room_id = strtoul(out_buf + 13, &end, 10);
+
+            if (end == out_buf + 13 || *end != '\0')
+            {
+                ui_print_error("ROOM ID IS NOT A NUMBER");
+                return 0;
+            }
+
+            if (errno == ERANGE || room_id < 1 || room_id > MAX_ROOMS)
+            {
+                ui_print_error("ROOM ID IS OUT OF RANGE");
+                return 0;
+            }
+
+            return client_send_pkt_room_create(epfd, c, (uint32_t)room_id);
         }
 
         else if (out_buf[0] == '/')
         {
-            printf("[ERROR] Unknown command: %s\n", out_buf);
-            printf("[LOCAL] Type /help to see supported commands.\n");
+            ui_print_error("Unknown command: %s", out_buf);
+            ui_print_local("Type /help to see supported commands.");
             return 0;
         }
         else
@@ -307,7 +349,7 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
             RoomSession* room = find_room_session(rooms, MAX_ROOMS, c->room_id);
             if (!room)
             {
-                fprintf(stderr, "[E2E] no room key for room#%" PRIu32 "\n", c->room_id);
+                ui_print_e2e("no room key for room#%" PRIu32 "", c->room_id);
                 return 0;
             }
             if (bytes < 0 || bytes > UINT16_MAX)
@@ -315,15 +357,17 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
                 fprintf(stderr, "message is too large\n");
                 return -1;
             }
+            if (c->room_state != ROOM_READY)
+            {
+                ui_print_local("Room is not ready yet.");
+                return 0;
+            }
             if (client_send_encrypted_chat(epfd, c, room, (uint8_t*)out_buf, (uint16_t)bytes) < 0)
             {
                 fprintf(stderr, "enqueue_packet failed\n");
                 return -1;
             }
-            printf("\033[1A"); // подняться на 1 строку вверх
-            printf("\033[2K"); // очистить всю строку
-            fflush(stdout);
-            printf("[room #%" PRIu32 "] %s: %s\n", c->room_id, c->name, out_buf);
+            ui_print_msg(out_buf, c->name, c->room_id);
             if (set_epollout_to_client(epfd, c) < 0)
             {
                 return -1;
@@ -333,24 +377,15 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
     return 0;
 }
 
-void print_help(Client* c)
+void print_help(Client* c, const char* default_name)
 {
     if (!c || c->auth_state != AUTH_READY)
     {
-        printf("Commands before login:\n");
-        printf("  /help\n");
-        printf("  /register NAME\n");
-        printf("  /login NAME\n");
-        printf("\n");
-        printf("You are not in chat yet. Plain text will not be sent.\n");
+        ui_print_help_logged_out(default_name);
         return;
     }
 
-    printf("Commands:\n");
-    printf("  /help\n");
-    printf("  /join ROOM_ID\n");
-    printf("\n");
-    printf("Plain text is sent to the current room.\n");
+    ui_print_help_logged_in(c->room_id);
 }
 
 int send_name_command(int epfd, Client* c, uint8_t pkt_type, const char* user_name)
@@ -359,13 +394,13 @@ int send_name_command(int epfd, Client* c, uint8_t pkt_type, const char* user_na
 
     if (name_len == 0)
     {
-        printf("[ERROR] EMPTY NAME\n");
+        ui_print_error("EMPTY NAME\n");
         return 0;
     }
 
     if (name_len > MAX_NAME_LEN)
     {
-        printf("[ERROR] NAME IS TOO LONG\n");
+        ui_print_error("NAME IS TOO LONG\n");
         return 0;
     }
 

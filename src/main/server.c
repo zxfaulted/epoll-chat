@@ -128,7 +128,7 @@ int main()
 
     ServerRoom server_rooms[MAX_ROOMS];
     init_server_rooms(server_rooms, MAX_ROOMS);
-
+    server_room_create(server_rooms, MAX_ROOMS, 1, SERVER_ID);
     while (1)
     {
         int nfds = epoll_wait(epfd, events, MAX_EVENTS, -1);
@@ -176,7 +176,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -185,7 +185,7 @@ int main()
                                 }
                                 fprintf(stderr, "recv_into_buf PKT_NAME\n");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -203,7 +203,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -211,7 +211,8 @@ int main()
                                     break;
                                 }
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                              "POP_PACKET_ERROR", &message_id);
+                                              "POP_PACKET_ERROR", server_rooms, MAX_ROOMS,
+                                              &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -224,7 +225,7 @@ int main()
                                 snprintf(res, 100, "VALIDATE_PACKET_NAME ERROR: %s\n", p_st_str);
 
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count, res,
-                                              &message_id);
+                                              server_rooms, MAX_ROOMS, &message_id);
 
                                 client_removed = 1;
                                 break;
@@ -237,7 +238,7 @@ int main()
                                 if (send_server_error(epfd, c, "NAME IS TOO LONG", &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -249,7 +250,7 @@ int main()
                                 if (!is_name_safe(out))
                                 {
                                     reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                                  "BAD NAME", &message_id);
+                                                  "BAD NAME", server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -260,7 +261,21 @@ int main()
                                     {
                                         fprintf(stderr, "SEND_SERVER_ERROR FAILED\n");
                                         disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                        ;
+                                        client_removed = 1;
+                                        break;
+                                    }
+
+                                    break;
+                                }
+                                if (active_name_exists(clients, clients_count, out))
+                                {
+                                    if (send_server_error(epfd, c, "USER IS ALREADY ONLINE",
+                                                          &message_id) < 0)
+                                    {
+                                        disconnect_client(epfd, c, clients, &clients_count,
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                         client_removed = 1;
                                         break;
                                     }
@@ -274,7 +289,8 @@ int main()
                                                           &message_id) < 0)
                                     {
                                         disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                        ;
                                         client_removed = 1;
                                         break;
                                     }
@@ -286,7 +302,7 @@ int main()
                                 {
                                     fprintf(stderr, "server_send_challenge failed\n");
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -298,7 +314,7 @@ int main()
                                 if (!is_name_safe(out))
                                 {
                                     reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                                  "BAD NAME", &message_id);
+                                                  "BAD NAME", server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -308,7 +324,8 @@ int main()
                                                           &message_id) < 0)
                                     {
                                         disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                        ;
                                         client_removed = 1;
                                         break;
                                     }
@@ -322,7 +339,8 @@ int main()
                                                           &message_id) < 0)
                                     {
                                         disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                        ;
                                         client_removed = 1;
                                         break;
                                     }
@@ -333,7 +351,7 @@ int main()
                                 {
                                     reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
                                                   "ANOTHER PENDING REGISTRATION ON THAT NAME",
-                                                  &message_id);
+                                                  server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -346,7 +364,8 @@ int main()
                                                           &message_id) < 0)
                                     {
                                         disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                        ;
                                         client_removed = 1;
                                         break;
                                     }
@@ -357,14 +376,14 @@ int main()
                                         epfd, c, c->id, reg_challenge, &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
                                 if (add_pending_registration(pr, c->name, reg_challenge, c->id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -385,7 +404,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -394,7 +413,7 @@ int main()
                                 }
                                 fprintf(stderr, "recv_into_buf PKT_NAME\n");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -412,7 +431,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -420,7 +439,8 @@ int main()
                                     break;
                                 }
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                              "POP_PACKET_ERROR", &message_id);
+                                              "POP_PACKET_ERROR", server_rooms, MAX_ROOMS,
+                                              &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -430,16 +450,18 @@ int main()
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
+                                break;
                             }
 
                             if (h.sender_id != c->id || h.room_id != 0)
                             {
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                              "BAD_REGISTER_COMMIT_HEADER", &message_id);
+                                              "BAD_REGISTER_COMMIT_HEADER", server_rooms, MAX_ROOMS,
+                                              &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -451,7 +473,7 @@ int main()
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -477,7 +499,7 @@ int main()
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -494,7 +516,7 @@ int main()
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -512,7 +534,7 @@ int main()
                                 if (send_server_error(epfd, c, "KSI WRITE FAILED", &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -529,7 +551,8 @@ int main()
                                                         &message_id) < 0)
                             {
                                 fprintf(stderr, "send_server_register_ok\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -537,7 +560,8 @@ int main()
                             if (set_epollout_to_client(epfd, c) < 0)
                             {
                                 fprintf(stderr, "set_epollout_to_client\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -556,7 +580,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -565,7 +589,7 @@ int main()
                                 }
                                 fprintf(stderr, "recv_into_buf PKT_NAME");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -583,7 +607,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -591,7 +615,8 @@ int main()
                                     break;
                                 }
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                              "POP_PACKET_ERROR", &message_id);
+                                              "POP_PACKET_ERROR", server_rooms, MAX_ROOMS,
+                                              &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -601,7 +626,7 @@ int main()
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -624,14 +649,16 @@ int main()
                             if (verification_response == 0)
                             {
                                 fprintf(stderr, "SIGN IS WRONG\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
                             else if (verification_response < 0)
                             {
                                 fprintf(stderr, "server_verify_challenge failed\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -639,14 +666,16 @@ int main()
                             if (send_server_auth_ok(c, c->room_id, c->name, c->id, &message_id) < 0)
                             {
                                 fprintf(stderr, "send_server_register_ok failed\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
                             if (set_epollout_to_client(epfd, c) < 0)
                             {
                                 fprintf(stderr, "set_epollout_to_client\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -674,7 +703,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -683,7 +712,7 @@ int main()
                                 }
                                 fprintf(stderr, "recv_into_buf C_WAIT_KEY_BUNDLE");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -702,7 +731,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -710,7 +739,8 @@ int main()
                                     break;
                                 }
                                 reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                              "POP_PACKET_ERROR", &message_id);
+                                              "POP_PACKET_ERROR", server_rooms, MAX_ROOMS,
+                                              &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -720,7 +750,7 @@ int main()
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -730,7 +760,7 @@ int main()
                             {
                                 fprintf(stderr, "msg_len WRONG\n");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -746,7 +776,7 @@ int main()
                             {
                                 fprintf(stderr, "did not pass verify_key_bundle\n");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -763,7 +793,7 @@ int main()
                             {
                                 fprintf(stderr, "deserialize_key_bundle_full failed\n");
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -781,7 +811,7 @@ int main()
                                                       &message_id) < 0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -797,7 +827,7 @@ int main()
                                     0)
                                 {
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
@@ -812,7 +842,8 @@ int main()
                             if (!c->raw_kb)
                             {
                                 ossl_print_error("OPENSSL_malloc");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -828,7 +859,8 @@ int main()
                                                         &message_id) < 0)
                             {
                                 fprintf(stderr, "send_server_ready_key_bundles failed\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -838,7 +870,8 @@ int main()
                                                               &message_id) < 0)
                             {
                                 fprintf(stderr, "send_server_ready_key_bundles failed\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -850,21 +883,22 @@ int main()
                                 {
                                     fprintf(stderr, "send_server_new_key_bundle failed\n");
                                     disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id);
+                                                      server_rooms, MAX_ROOMS, &message_id);
                                     client_removed = 1;
                                     break;
                                 }
                             }
                             // 7. Разослать PKT_JOIN.
                             broadcast_user_event(epfd, c, c->room_id, clients, &clients_count,
-                                                 PKT_JOIN, &message_id);
+                                                 PKT_JOIN, server_rooms, MAX_ROOMS, &message_id);
                             // 8. Отправить новому клиенту PKT_ROOM_SYNC_DONE.
                             if (send_server_user_event(c, c->room_id, PKT_ROOM_SYNC_DONE, c->name,
                                                        c->id, &message_id) < 0)
                             {
                                 fprintf(stderr,
                                         "send_server_user_event PKT_ROOM_SYNC_DONE failed\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -872,7 +906,8 @@ int main()
                             if (set_epollout_to_client(epfd, c) < 0)
                             {
                                 fprintf(stderr, "set_epollout_to_client failed\n");
-                                disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                                disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id);
                                 client_removed = 1;
                                 break;
                             }
@@ -898,7 +933,7 @@ int main()
                                 if (rc == -1)
                                 {
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -910,7 +945,7 @@ int main()
                                     perror("recv_into_buf PKT_CHAT");
                                 }
                                 if (disconnect_client(epfd, c, clients, &clients_count,
-                                                      &message_id) < 0)
+                                                      server_rooms, MAX_ROOMS, &message_id) < 0)
                                 {
                                     fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                 }
@@ -931,6 +966,7 @@ int main()
                                     if (rc == -1)
                                     {
                                         if (disconnect_client(epfd, c, clients, &clients_count,
+                                                              server_rooms, MAX_ROOMS,
                                                               &message_id) < 0)
                                         {
                                             fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
@@ -940,7 +976,7 @@ int main()
                                     }
                                     fprintf(stderr, "try_pop_packet broadcast");
                                     if (disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id) < 0)
+                                                          server_rooms, MAX_ROOMS, &message_id) < 0)
                                     {
                                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                                     }
@@ -953,10 +989,12 @@ int main()
                                                           &message_id) < 0)
                                     {
                                         disconnect_client(epfd, c, clients, &clients_count,
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                        ;
                                         client_removed = 1;
                                         break;
                                     }
+                                    break;
                                 }
                                 switch (h.type)
                                 {
@@ -972,7 +1010,8 @@ int main()
                                                                       &message_id) < 0)
                                                 {
                                                     disconnect_client(epfd, c, clients,
-                                                                      &clients_count, &message_id);
+                                                                      &clients_count, server_rooms,
+                                                                      MAX_ROOMS, &message_id);
                                                     client_removed = 1;
                                                     break;
                                                 }
@@ -993,13 +1032,14 @@ int main()
                                                    c->room_id, c->name, c->id, (int)msg_len, msg);
                                             broadcast_message(epfd, c, &out, clients,
                                                               &clients_count, msg, msg_len,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                         }
                                         else
                                         {
                                             const char* p_st_str = packet_state_str(p_st);
                                             reject_packet(epfd, c, c->ei.fd, clients,
-                                                          &clients_count, p_st_str, &message_id);
+                                                          &clients_count, p_st_str, server_rooms,
+                                                          MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1014,22 +1054,19 @@ int main()
                                             reject_packet(epfd, c, c->ei.fd, clients,
                                                           &clients_count,
                                                           "YOUR HEADER ID DIFFERS WITH YOUR ROOM",
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
-                                        // if (clients_leader_id(clients, clients_count, c->room_id)
-                                        // !=
-                                        //     c->id)
-                                        // {
-                                        //     fprintf(stderr,
-                                        //             "pkt_enc_room_key: not leader tried to
-                                        //             send\n");
-                                        //     send_server_error(epfd, c, "YOU ARE NOT THE LEADER",
-                                        //                       &message_id);
-                                        //     break;
-                                        // }
-
+                                        if (msg_len != PKT_ENC_ROOM_KEY_PAYLOAD_LEN)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "BAD PKT_ENC_ROOM_KEY LEN", server_rooms,
+                                                          MAX_ROOMS, &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
                                         uint32_t to_client_id = get_u32_be(msg);
                                         Client*  to =
                                             find_client(clients, clients_count, to_client_id);
@@ -1060,14 +1097,24 @@ int main()
                                                 &message_id);
                                             break;
                                         }
+                                        // if (clients_leader_id(clients, clients_count, c->room_id)
+                                        // !=
+                                        //     c->id)
+                                        // {
+                                        //     send_server_error(epfd, c, "YOU ARE NOT THE LEADER",
+                                        //                       &message_id);
+                                        //     set_epollout_to_client(epfd, c);
+                                        //     break;
+                                        // }
                                         if (forward_room_key_packet(epfd, clients, clients_count, c,
                                                                     &h, msg, msg_len,
                                                                     &message_id) < 0)
                                         {
                                             fprintf(stderr, "forward_room_key_packet\n");
-                                            reject_packet(
-                                                epfd, c, c->ei.fd, clients, &clients_count,
-                                                "forward_room_key_packet failed", &message_id);
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "forward_room_key_packet failed",
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1081,9 +1128,10 @@ int main()
                                         {
                                             fprintf(stderr,
                                                     "server_recv_pkt_room_join_begin failed\n");
-                                            reject_packet(
-                                                epfd, c, c->ei.fd, clients, &clients_count,
-                                                "forward_room_key_packet failed", &message_id);
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "forward_room_key_packet failed",
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1105,14 +1153,16 @@ int main()
                                                         c->id, &message_id) < 0)
                                                 {
                                                     disconnect_client(epfd, c, clients,
-                                                                      &clients_count, &message_id);
+                                                                      &clients_count, server_rooms,
+                                                                      MAX_ROOMS, &message_id);
                                                     client_removed = 1;
                                                     break;
                                                 }
                                                 if (set_epollout_to_client(epfd, c) < 0)
                                                 {
                                                     disconnect_client(epfd, c, clients,
-                                                                      &clients_count, &message_id);
+                                                                      &clients_count, server_rooms,
+                                                                      MAX_ROOMS, &message_id);
                                                     client_removed = 1;
                                                     break;
                                                 }
@@ -1120,9 +1170,9 @@ int main()
                                             }
 
                                             // рассылка PKT_LEAVE в прошлую комнату
-                                            broadcast_user_event(epfd, c, c->room_id, clients,
-                                                                 &clients_count, PKT_LEAVE,
-                                                                 &message_id);
+                                            broadcast_user_event(
+                                                epfd, c, c->room_id, clients, &clients_count,
+                                                PKT_LEAVE, server_rooms, MAX_ROOMS, &message_id);
                                             // смена комнаты для клиента
                                             uint32_t prev_room_id = c->room_id;
                                             c->room_id            = room_id;
@@ -1131,15 +1181,16 @@ int main()
                                                    "\n",
                                                    c->name, c->id, prev_room_id, c->room_id);
                                             // рассылка PKT_JOIN в новую комнату
-                                            broadcast_user_event(epfd, c, c->room_id, clients,
-                                                                 &clients_count, PKT_JOIN,
-                                                                 &message_id);
+                                            broadcast_user_event(
+                                                epfd, c, c->room_id, clients, &clients_count,
+                                                PKT_JOIN, server_rooms, MAX_ROOMS, &message_id);
                                             // подтверждение смены комнаты клиенту
                                             if (send_server_user_event(c, c->room_id,
                                                                        PKT_ROOM_CHANGE_OK, c->name,
                                                                        c->id, &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1150,6 +1201,7 @@ int main()
                                                                         &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1160,6 +1212,7 @@ int main()
                                                                               &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1170,6 +1223,7 @@ int main()
                                                                            &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1180,6 +1234,7 @@ int main()
                                                                        c->id, &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1187,6 +1242,7 @@ int main()
                                             if (set_epollout_to_client(epfd, c) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1201,15 +1257,18 @@ int main()
                                             send_server_error(epfd, c, "COULD NOT CREATE ROOM",
                                                               &message_id);
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
+                                        c->pending_room_id = room_id;
+                                        c->room_state      = ROOM_PASSWORD_UNLOCKING;
                                         break;
                                     }
 
                                     case PKT_ROOM_UNLOCK:
                                     {
+
                                         uint32_t room_id;
                                         uint64_t epoch;
                                         uint8_t  verifier[ROOM_PASSWORD_VERIFIER_LEN];
@@ -1219,15 +1278,22 @@ int main()
                                         {
                                             reject_packet(epfd, c, c->ei.fd, clients,
                                                           &clients_count, "PKT ROOM UNLOCK BAD",
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
+                                            break;
+                                        }
+                                        if (c->pending_room_id != room_id)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count, "UNLOCK ROOM MISMATCH",
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             break;
                                         }
                                         if (room_id < 1 || room_id > MAX_ROOMS)
                                         {
                                             reject_packet(epfd, c, c->ei.fd, clients,
                                                           &clients_count, "ROOM ID BAD",
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1239,6 +1305,7 @@ int main()
                                                                        c->id, &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1246,6 +1313,7 @@ int main()
                                             if (set_epollout_to_client(epfd, c) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1261,13 +1329,7 @@ int main()
                                                                   &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
-                                                                  &message_id);
-                                                client_removed = 1;
-                                                break;
-                                            }
-                                            if (set_epollout_to_client(epfd, c) < 0)
-                                            {
-                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1278,7 +1340,7 @@ int main()
                                         if (epoch != room->rpi.epoch)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1286,17 +1348,18 @@ int main()
                                         if (CRYPTO_memcmp(room->rpi.verifier, verifier,
                                                           ROOM_PASSWORD_VERIFIER_LEN) != 0)
                                         {
-                                            reject_packet(epfd, c, c->ei.fd, clients,
-                                                          &clients_count, "VERIFIERS DIFFER",
-                                                          &message_id);
-                                            client_removed = 1;
+                                            c->pending_room_id = 0;
+                                            c->room_state      = ROOM_READY;
+
+                                            send_server_error(epfd, c, "WRONG ROOM PASSWORD",
+                                                              &message_id);
                                             break;
                                         }
 
                                         // рассылка PKT_LEAVE в прошлую комнату
                                         broadcast_user_event(epfd, c, c->room_id, clients,
                                                              &clients_count, PKT_LEAVE,
-                                                             &message_id);
+                                                             server_rooms, MAX_ROOMS, &message_id);
                                         // смена комнаты для клиента
                                         uint32_t prev_room_id = c->room_id;
                                         c->room_id            = room_id;
@@ -1305,14 +1368,15 @@ int main()
                                                c->name, c->id, prev_room_id, c->room_id);
                                         // рассылка PKT_JOIN в новую комнату
                                         broadcast_user_event(epfd, c, c->room_id, clients,
-                                                             &clients_count, PKT_JOIN, &message_id);
+                                                             &clients_count, PKT_JOIN, server_rooms,
+                                                             MAX_ROOMS, &message_id);
                                         // подтверждение смены комнаты клиенту
                                         if (send_server_user_event(c, c->room_id,
                                                                    PKT_ROOM_CHANGE_OK, c->name,
                                                                    c->id, &message_id) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1321,7 +1385,7 @@ int main()
                                                                     clients_count, &message_id) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1330,7 +1394,7 @@ int main()
                                                 epfd, c, clients, &clients_count, &message_id) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1339,7 +1403,7 @@ int main()
                                                 epfd, c, clients, clients_count, &message_id) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1349,18 +1413,19 @@ int main()
                                                                    c->id, &message_id) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
                                         if (set_epollout_to_client(epfd, c) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
-                                        c->room_state = ROOM_READY;
+                                        c->room_state      = ROOM_READY;
+                                        c->pending_room_id = 0;
                                         break;
                                     }
 
@@ -1378,25 +1443,30 @@ int main()
                                                                   &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
                                             }
-                                            if (set_epollout_to_client(epfd, c) < 0)
-                                            {
-                                                disconnect_client(epfd, c, clients, &clients_count,
-                                                                  &message_id);
-                                                client_removed = 1;
-                                                break;
-                                            }
+                                            break;
                                         }
                                         uint32_t wanted_room_id;
                                         if (parse_pkt_room_create_payload(msg, msg_len,
                                                                           &wanted_room_id) != 0)
                                         {
-                                            reject_packet(
-                                                epfd, c, c->ei.fd, clients, &clients_count,
-                                                "BAD PKT_ROOM_CREATE PACKET", &message_id);
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "BAD PKT_ROOM_CREATE PACKET",
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        if (wanted_room_id < 1 || wanted_room_id > MAX_ROOMS)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "WANTED ROOM ID IS OUT OF RANGE",
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1407,23 +1477,18 @@ int main()
                                                                   &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
                                             }
-                                            if (set_epollout_to_client(epfd, c) < 0)
-                                            {
-                                                disconnect_client(epfd, c, clients, &clients_count,
-                                                                  &message_id);
-                                                client_removed = 1;
-                                                break;
-                                            }
+                                            break;
                                         }
                                         if (server_send_pkt_room_create_ok(epfd, c, wanted_room_id,
                                                                            &message_id) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1454,8 +1519,46 @@ int main()
                                                 msg, msg_len, &wanted_room_id, &rpi) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
+                                            break;
+                                        }
+                                        PacketState p_st =
+                                            validate_packet_room_password(wanted_room_id, &rpi);
+                                        if (p_st != PKT_OK)
+                                        {
+                                            char        res[100];
+                                            const char* p_st_str = packet_state_str(p_st);
+                                            snprintf(res, 100,
+                                                     "validate_packet_room_password ERROR: %s\n",
+                                                     p_st_str);
+
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count, res, server_rooms,
+                                                          MAX_ROOMS, &message_id);
+
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        uint32_t opened_room = server_room_is_owner_of_any(
+                                            server_rooms, MAX_ROOMS, c->id);
+                                        if (opened_room != 0)
+                                        {
+                                            char info[80];
+                                            snprintf(
+                                                info, sizeof(info),
+                                                "YOU HAVE ALREADY OPENED ROOM WITH ID %" PRIu32,
+                                                opened_room);
+
+                                            if (send_server_error(epfd, c, info, &message_id) < 0)
+                                            {
+                                                disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
+                                                                  &message_id);
+                                                client_removed = 1;
+                                                break;
+                                            }
+
                                             break;
                                         }
                                         int owner_ret = server_room_has_owner(
@@ -1464,16 +1567,17 @@ int main()
                                         {
                                             char info[50];
                                             snprintf(info, sizeof(info),
-                                                     "YOU ALREADY OWN THE ROOM #%" PRIu32 "",
+                                                     "ROOM ALREADY HAS THE OWNER WITH ID#%" PRIu32
+                                                     "",
                                                      owner_ret);
                                             if (send_server_error(epfd, c, info, &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
                                             }
-
                                             break;
                                         }
                                         if (server_room_create_password(server_rooms, MAX_ROOMS,
@@ -1487,16 +1591,18 @@ int main()
                                                     &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
                                             }
+                                            break;
                                         }
                                         if (server_send_pkt_room_create_ok(epfd, c, wanted_room_id,
                                                                            &message_id) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1512,18 +1618,58 @@ int main()
                                         if (parse_pkt_room_password_rekey_payload(
                                                 msg, msg_len, &room_id, &rpi) < 0)
                                         {
-                                            return -1;
+                                            send_server_error(epfd, c,
+                                                              "BAD PKT_ROOM_PASSWORD_REKEY",
+                                                              &message_id);
+
+                                            break;
                                         }
 
                                         ServerRoom* room = server_room_find_by_id(
                                             server_rooms, MAX_ROOMS, room_id);
 
-                                        if (!room || !room->has_password ||
-                                            rpi.epoch != room->rpi.epoch + 1)
+                                        if (!room || !room->has_password)
                                         {
-                                            reject_packet(
-                                                epfd, c, c->ei.fd, clients, &clients_count,
-                                                "INVALID PKT_ROOM_PASSWORD_REKEY", &message_id);
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count,
+                                                          "INVALID PKT_ROOM_PASSWORD_REKEY",
+                                                          server_rooms, MAX_ROOMS, &message_id);
+                                            client_removed = 1;
+                                            break;
+                                        }
+                                        if (rpi.epoch <= room->rpi.epoch)
+                                        {
+                                            send_server_error(epfd, c, "STALE PASSWORD REKEY",
+                                                              &message_id);
+                                            break;
+                                        }
+
+                                        if (rpi.epoch != room->rpi.epoch + 1)
+                                        {
+                                            send_server_error(epfd, c, "PASSWORD REKEY EPOCH GAP",
+                                                              &message_id);
+                                            break;
+                                        }
+                                        int p_st = validate_packet_room_password_rekey(room_id,
+                                                                                       room, &rpi);
+                                        if (p_st != PKT_OK)
+                                        {
+                                            char info[128];
+
+                                            snprintf(info, sizeof(info),
+                                                     "BAD PKT_ROOM_PASSWORD_REKEY: %s",
+                                                     packet_state_str(p_st));
+                                            send_server_error(epfd, c,
+                                                              "BAD PKT_ROOM_PASSWORD_REKEY",
+                                                              &message_id);
+
+                                            break;
+                                        }
+                                        if (c->room_id != room_id)
+                                        {
+                                            reject_packet(epfd, c, c->ei.fd, clients,
+                                                          &clients_count, "REKEY ROOM MISMATCH",
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1535,7 +1681,7 @@ int main()
                                                           &clients_count,
                                                           "YOU ARE NOT THE LEADER TO SEND SERVER "
                                                           "ROOM PASSWORD METADATA",
-                                                          &message_id);
+                                                          server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
@@ -1543,34 +1689,12 @@ int main()
                                         if (server_room_update_metadata(room, &rpi) < 0)
                                         {
                                             disconnect_client(epfd, c, clients, &clients_count,
-                                                              &message_id);
+                                                              server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;
                                         }
                                         break;
                                     }
-
-                                        // case PKT_ROOM_CHANGE:
-                                        // {
-                                        //     PacketState p_st =
-                                        //     validate_packet_room_change(msg_len, &h);
-
-                                        //     if (p_st != PKT_OK)
-                                        //     {
-                                        //         if (send_server_error(epfd, c,
-                                        //         packet_state_str(p_st),
-                                        //                               &message_id) < 0)
-                                        //         {
-                                        //             disconnect_client(epfd, c, clients,
-                                        //             &clients_count,
-                                        //                               &message_id);
-                                        //             client_removed = 1;
-                                        //             break;
-                                        //         }
-                                        //         c->close_after_flush = 1;
-                                        //         break;
-                                        //     }
-
                                     case PKT_ENC_CHAT:
                                     {
                                         if (c->room_id != h.room_id)
@@ -1581,6 +1705,7 @@ int main()
                                                     &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1594,6 +1719,7 @@ int main()
                                                                   &message_id) < 0)
                                             {
                                                 disconnect_client(epfd, c, clients, &clients_count,
+                                                                  server_rooms, MAX_ROOMS,
                                                                   &message_id);
                                                 client_removed = 1;
                                                 break;
@@ -1610,7 +1736,8 @@ int main()
                                         h_out.type       = PKT_ENC_CHAT;
                                         h_out.version    = 1;
                                         broadcast_message(epfd, c, &h_out, clients, &clients_count,
-                                                          msg, msg_len, &message_id);
+                                                          msg, msg_len, server_rooms, MAX_ROOMS,
+                                                          &message_id);
                                         break;
                                     }
 
@@ -1620,7 +1747,8 @@ int main()
                                         snprintf(reply, 256, "UNSUPPORTED PACKET TYPE: %s",
                                                  packet_type_str(h.type));
                                         reject_packet(epfd, c, c->ei.fd, clients, &clients_count,
-                                                      (const char*)reply, &message_id);
+                                                      (const char*)reply, server_rooms, MAX_ROOMS,
+                                                      &message_id);
                                         client_removed = 1;
                                         break;
                                     }
@@ -1643,15 +1771,16 @@ int main()
                     {
                         if (rc == -1)
                         {
-                            if (disconnect_client(epfd, c, clients, &clients_count, &message_id) <
-                                0)
+                            if (disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id) < 0)
                             {
                                 fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                             }
                             client_removed = 1;
                             break;
                         }
-                        if (disconnect_client(epfd, c, clients, &clients_count, &message_id) < 0)
+                        if (disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                              MAX_ROOMS, &message_id) < 0)
                         {
                             fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                         }
@@ -1662,14 +1791,15 @@ int main()
                     {
                         if (c->close_after_flush)
                         {
-                            disconnect_client(epfd, c, clients, &clients_count, &message_id);
+                            disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                              MAX_ROOMS, &message_id);
                             client_removed = 1;
                             continue;
                         }
                         if (unset_epollout_to_client(epfd, c) < 0)
                         {
-                            if (disconnect_client(epfd, c, clients, &clients_count, &message_id) <
-                                0)
+                            if (disconnect_client(epfd, c, clients, &clients_count, server_rooms,
+                                                  MAX_ROOMS, &message_id) < 0)
                             {
                                 fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                             }
@@ -1687,7 +1817,8 @@ int main()
                 // EPOLLRDHUP - клиент больше не пишет, но может читать
                 if (cur_evs & EPOLLHUP || cur_evs & EPOLLRDHUP || cur_evs & EPOLLERR)
                 {
-                    if (disconnect_client(epfd, c, clients, &clients_count, &message_id) < 0)
+                    if (disconnect_client(epfd, c, clients, &clients_count, server_rooms, MAX_ROOMS,
+                                          &message_id) < 0)
                     {
                         fprintf(stderr, "FAILED TO DISCONNECT CLIENT\n");
                     }

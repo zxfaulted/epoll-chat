@@ -41,11 +41,14 @@ SERVER_OBJS := $(SERVER_OBJ) $(COMMON_OBJS)
 CLIENT := $(BIN_DIR)/client
 SERVER := $(BIN_DIR)/server
 
-.PHONY: all deps clean run
+.PHONY: all deps clean demo stop
+
+#.DEFAULT_GOAL := all
 
 # wmctrl -r WINDOW_TITLE -e 0,X,Y,WIDTH,HEIGHT
-run:
-	clear
+demo: all
+	@command -v kitty >/dev/null || { echo "kitty not found"; exit 1; }
+	@command -v wmctrl >/dev/null || { echo "wmctrl not found"; exit 1; }
 	$(MAKE) stop
 	$(MAKE) $(BIN_DIR)/client $(BIN_DIR)/server
 

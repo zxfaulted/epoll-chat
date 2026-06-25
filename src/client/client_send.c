@@ -100,14 +100,16 @@ int client_send_pkt_room_create_password(int epfd, Client* c, uint32_t room_id,
     h.version    = 1;
 
     RoomPasswordInfo rpi;
+    memset(&rpi, 0, sizeof(rpi));
 
     uint8_t msg[PKT_ROOM_CREATE_PASSWORD_PAYLOAD_LEN];
     if (build_pkt_room_create_password_payload(room_id, (uint8_t*)password, strlen(password), &rpi,
                                                plaintext_room_key, &msg) < 0)
     {
+        OPENSSL_cleanse(&rpi, sizeof(rpi));
         return -1;
     }
-
+    OPENSSL_cleanse(&rpi, sizeof(rpi));
     if (enqueue_packet(c, &h, msg, PKT_ROOM_CREATE_PASSWORD_PAYLOAD_LEN) < 0)
     {
         return -1;

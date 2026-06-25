@@ -82,13 +82,6 @@ int client_recv_pkt_enc_chat(Client* c, Header* h, RoomSession* room, uint8_t* m
     seq = get_u64_be(p + off);
     off += 8;
 
-    uint32_t last_seen_seq = room->recv[h->sender_id].peer_id;
-    if (seq <= last_seen_seq)
-    {
-        fprintf(stderr, "old seq\n");
-        goto cleanup;
-    }
-
     // [16 nonce]
     memcpy(nonce, p + off, ENC_NONCE);
     off += ENC_NONCE;

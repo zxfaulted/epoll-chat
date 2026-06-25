@@ -211,6 +211,7 @@ typedef struct Client
 
     AuthState       auth_state;
     ClientRoomState room_state;
+    uint32_t        pending_room_id;
 
     struct sockaddr_in sa;
 

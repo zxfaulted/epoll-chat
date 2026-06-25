@@ -10,6 +10,7 @@
 int packet_parse_auth_register_ok(const uint8_t* msg, uint32_t msg_len, uint32_t* out_client_id,
                                   uint32_t* out_room_id, char name[])
 {
+    int ret = -1;
     if (!msg || !out_client_id || !out_room_id || !name)
     {
         return -1;
@@ -37,14 +38,15 @@ int packet_parse_auth_register_ok(const uint8_t* msg, uint32_t msg_len, uint32_t
     }
     memcpy(name, p, name_len);
     name[name_len] = '\0';
-
+    ret            = 0;
 cleanup:
-    return 0;
+    return ret;
 }
 
 int packet_parse_client_id_name(const uint8_t* msg, uint32_t msg_len, uint32_t* out_client_id,
                                 char name[])
 {
+    int ret = -1;
     if (!msg || !out_client_id || !name)
     {
         return -1;
@@ -68,7 +70,7 @@ int packet_parse_client_id_name(const uint8_t* msg, uint32_t msg_len, uint32_t* 
     }
     memcpy(name, p, name_len);
     name[name_len] = '\0';
-
+    ret            = 0;
 cleanup:
-    return 0;
+    return ret;
 }

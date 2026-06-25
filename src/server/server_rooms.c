@@ -174,3 +174,19 @@ int server_room_update_metadata(ServerRoom* room, RoomPasswordInfo* rpi)
 
     return 0;
 }
+
+void server_room_delete_by_owner(ServerRoom* rooms, uint32_t rooms_count, uint32_t owner_id)
+{
+    if (!rooms || owner_id == 0)
+    {
+        return;
+    }
+
+    for (uint32_t i = 1; i < rooms_count; ++i)
+    {
+        if (rooms[i].used && rooms[i].owner_id == owner_id)
+        {
+            memset(&rooms[i], 0, sizeof(rooms[i]));
+        }
+    }
+}

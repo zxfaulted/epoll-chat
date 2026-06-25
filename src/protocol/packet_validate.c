@@ -1,5 +1,7 @@
 #include "protocol/packet_validate.h"
 
+#include <openssl/crypto.h>
+
 PacketState validate_packet_begin(uint32_t msg_len, Header* h)
 {
     if (h->version != 1)
@@ -109,5 +111,88 @@ PacketState validate_packet_room_change(uint32_t msg_len, Header* h)
     {
         return PKT_BAD_PAYLOAD_SIZE;
     }
+    return PKT_OK;
+}
+
+PacketState validate_packet_room_password(uint32_t room_id, RoomPasswordInfo* rpi)
+{
+    if (rpi->epoch != 1)
+    {
+        return PKT_BAD_EPOCH;
+    }
+    if (room_id < 1 || room_id > MAX_ROOMS)
+    {
+        return PKT_BAD_ROOM_ID;
+    }
+    uint8_t zero_salt[ROOM_SALT_LEN] = {0};
+    if (CRYPTO_memcmp(rpi->salt, zero_salt, ROOM_SALT_LEN) == 0)
+    {
+        return PKT_BAD_SALT;
+    }
+    uint8_t zero_verifier[ROOM_PASSWORD_VERIFIER_LEN] = {0};
+    if (CRYPTO_memcmp(rpi->verifier, zero_verifier, ROOM_PASSWORD_VERIFIER_LEN) == 0)
+    {
+        return PKT_BAD_VERIFIER;
+    }
+    uint8_t zero_nonce[ROOM_NONCE_LEN] = {0};
+    if (CRYPTO_memcmp(rpi->nonce, zero_nonce, ROOM_NONCE_LEN) == 0)
+    {
+        return PKT_BAD_NONCE;
+    }
+
+    uint8_t zero_tag[ROOM_TAG_LEN] = {0};
+    if (CRYPTO_memcmp(rpi->tag, zero_tag, ROOM_TAG_LEN) == 0)
+    {
+        return PKT_BAD_TAG;
+    }
+
+    uint8_t zero_key[ENCRYPTED_ROOM_KEY_LEN] = {0};
+    if (CRYPTO_memcmp(rpi->encrypted_room_key, zero_key, ENCRYPTED_ROOM_KEY_LEN) == 0)
+    {
+        return PKT_BAD_ROOM_KEY;
+    }
+
+    return PKT_OK;
+}
+
+PacketState validate_packet_room_password_rekey(uint32_t room_id, const ServerRoom* room,
+                                                RoomPasswordInfo* rpi)
+{
+    if (!room || !rpi)
+    {
+        return PKT_BAD_PAYLOAD_SIZE;
+    }
+
+    if (room_id < 1 || room_id > MAX_ROOMS)
+    {
+        return PKT_BAD_ROOM_ID;
+    }
+
+    if (rpi->epoch != room->rpi.epoch + 1)
+    {
+        return PKT_BAD_EPOCH;
+    }
+
+    uint8_t zero_salt[ROOM_SALT_LEN]                  = {0};
+    uint8_t zero_nonce[ROOM_NONCE_LEN]                = {0};
+    uint8_t zero_tag[ROOM_TAG_LEN]                    = {0};
+    uint8_t zero_key[ENCRYPTED_ROOM_KEY_LEN]          = {0};
+    uint8_t zero_verifier[ROOM_PASSWORD_VERIFIER_LEN] = {0};
+
+    if (CRYPTO_memcmp(rpi->salt, zero_salt, ROOM_SALT_LEN) == 0)
+        return PKT_BAD_SALT;
+
+    if (CRYPTO_memcmp(rpi->nonce, zero_nonce, ROOM_NONCE_LEN) == 0)
+        return PKT_BAD_NONCE;
+
+    if (CRYPTO_memcmp(rpi->tag, zero_tag, ROOM_TAG_LEN) == 0)
+        return PKT_BAD_TAG;
+
+    if (CRYPTO_memcmp(rpi->encrypted_room_key, zero_key, ENCRYPTED_ROOM_KEY_LEN) == 0)
+        return PKT_BAD_ROOM_KEY;
+
+    if (CRYPTO_memcmp(rpi->verifier, zero_verifier, ROOM_PASSWORD_VERIFIER_LEN) == 0)
+        return PKT_BAD_VERIFIER;
+
     return PKT_OK;
 }

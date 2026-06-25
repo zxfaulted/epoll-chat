@@ -38,10 +38,13 @@ int server_packet_allow(Client* c, PacketType type, AuthState auth)
                 case PKT_ROOM_CREATE:
                 case PKT_ROOM_CREATE_PASSWORD:
                 case PKT_ROOM_JOIN_BEGIN:
-                case PKT_ROOM_UNLOCK:
                 case PKT_ROOM_PASSWORD_REKEY:
                 {
                     return 1;
+                }
+                case PKT_ROOM_UNLOCK:
+                {
+                    return c->room_state == ROOM_PASSWORD_UNLOCKING;
                 }
                 default:
                     return 0;

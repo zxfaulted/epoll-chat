@@ -128,8 +128,8 @@ static void remove_client(int epfd, int cur_fd, Client* clients[], int* clients_
     }
 }
 
-int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count,
-                      uint32_t* message_id)
+int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count, ServerRoom* rooms,
+                      uint32_t rooms_count, uint32_t* message_id)
 {
     if (!c || !clients)
     {
@@ -137,8 +137,12 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
     }
     if (c->room_state == ROOM_READY && c->name[0] != '\0')
     {
-        broadcast_user_event(epfd, c, c->room_id, clients, clients_count, PKT_LEAVE, message_id);
+        broadcast_user_event(epfd, c, c->room_id, clients, clients_count, PKT_LEAVE, rooms,
+                             rooms_count, message_id);
     }
+
+    server_room_delete_by_owner(rooms, rooms_count, c->id);
+
     remove_client(epfd, c->ei.fd, clients, clients_count);
     return 0;
 }
@@ -177,6 +181,29 @@ int set_client_name(Client* c, const char* msg, size_t msg_len)
 
     memcpy(c->name, msg, msg_len);
     c->name[msg_len] = '\0';
+
+    return 0;
+}
+
+int active_name_exists(Client* clients[], int clients_count, const char* name)
+{
+    if (!clients || !name)
+    {
+        return 0;
+    }
+
+    for (int i = 0; i < clients_count; ++i)
+    {
+        if (!clients[i])
+        {
+            continue;
+        }
+
+        if (clients[i]->auth_state == AUTH_READY && strcmp(clients[i]->name, name) == 0)
+        {
+            return 1;
+        }
+    }
 
     return 0;
 }

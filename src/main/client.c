@@ -14,8 +14,11 @@
 #include "transport/epoll_io.h"
 #include "transport/packet_io.h"
 #include "transport/tcp.h"
+#include "ui/ansi.h"
+#include "ui/ui.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <netinet/in.h>
@@ -30,14 +33,48 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
+
+static struct termios old_termios;
+
+static void restore_terminal(void)
+{
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_termios);
+}
+
+static int enable_raw_terminal(void)
+{
+    if (tcgetattr(STDIN_FILENO, &old_termios) < 0)
+    {
+        perror("tcgetattr");
+        return -1;
+    }
+
+    struct termios raw = old_termios;
+
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_iflag &= ~(ICRNL | IXON);
+
+    raw.c_cc[VMIN]  = 1;
+    raw.c_cc[VTIME] = 0;
+
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0)
+    {
+        perror("tcsetattr");
+        return -1;
+    }
+
+    atexit(restore_terminal);
+    return 0;
+}
 
 #define OUT_CAP (PAYLOAD_SIZE + 1)
 
 int main(int argc, char** argv)
 {
-    char* default_name = "default";
+    char* default_name = "client";
 
     if (argc >= 2)
     {
@@ -47,6 +84,11 @@ int main(int argc, char** argv)
     {
         printf("ENTER YOUR NAME LIKE './client NAME'\n");
         return -1;
+    }
+
+    if (enable_raw_terminal() < 0)
+    {
+        goto cleanup;
     }
 
     OSSL_PROVIDER* dflt = NULL;
@@ -81,6 +123,12 @@ int main(int argc, char** argv)
     memset(stdin_line, 0, BUF_SIZE);
     size_t stdin_line_len  = 0;
     int    stdin_line_drop = 0;
+
+    int              awaiting_room_password        = 0;
+    int              awaiting_create_room_password = 0;
+    uint32_t         pending_password_room_id      = 0;
+    RoomPasswordInfo pending_rpi;
+    memset(&pending_rpi, 0, sizeof(pending_rpi));
 
     UserEntry ue[MAX_CLIENTS];
     memset(&ue, 0, sizeof(UserEntry) * MAX_CLIENTS);
@@ -178,10 +226,8 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    printf("[LOCAL] Not logged in.\n");
-
-    printf("[LOCAL] Type '/help', '/login NAME' or '/register NAME'.\n");
-    printf("[LOCAL] Use '/login' or '/register' to use your default name: %s\n", default_name);
+    ui_print_welcome(default_name);
+    ui_input_redraw(stdin_line, stdin_line_len);
     while (1)
     {
         int nfds = epoll_wait(epfd, events, 2, -1);
@@ -221,48 +267,348 @@ int main(int argc, char** argv)
                     for (ssize_t j = 0; j < bytes; j++)
                     {
                         char ch = read_buf[j];
-                        if (ch == '\n')
+
+                        if (ch == '\n' || ch == '\r')
                         {
+                            ui_input_clear();
+
                             if (stdin_line_drop)
                             {
-                                if (ch == '\n')
+                                stdin_line_drop = 0;
+                                stdin_line_len  = 0;
+                                stdin_line[0]   = '\0';
+                                if (awaiting_room_password || awaiting_create_room_password)
                                 {
-                                    stdin_line_drop = 0;
+                                    ui_input_redraw_masked(stdin_line, stdin_line_len);
                                 }
                                 else
                                 {
-                                    continue;
+                                    ui_input_redraw(stdin_line, stdin_line_len);
                                 }
+                                continue;
                             }
-                            if (stdin_line_len > 0 && stdin_line[stdin_line_len - 1] == '\r')
-                            {
-                                stdin_line_len--;
-                            }
+
+                            stdin_line[stdin_line_len] = '\0';
                             stdin_line[stdin_line_len] = '\0';
 
-                            if (handle_input(epfd, c, rooms, &gk, stdin_line, stdin_line_len,
-                                             default_name, &registration_in_progress,
-                                             &generated_keys_for_registration) < 0)
+                            stdin_line[stdin_line_len] = '\0';
+
+                            if (awaiting_create_room_password)
                             {
-                                goto cleanup;
+                                /*
+                                 * Пароль для СОЗДАНИЯ комнаты.
+                                 * Тут НЕ должно быть try_decrypt_room_key_ex.
+                                 */
+
+                                if (strcmp(stdin_line, "exit") == 0)
+                                {
+                                    awaiting_create_room_password = 0;
+                                    pending_password_room_id      = 0;
+
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_print_local("Password room creation cancelled");
+                                    ui_input_redraw(stdin_line, stdin_line_len);
+                                    continue;
+                                }
+
+                                size_t password_len = strlen(stdin_line);
+
+                                if (password_len > MAX_PASSWORD_LEN)
+                                {
+                                    ui_print_error("MAXIMUM PASSWORD LENGTH IS %d SYMBOLS",
+                                                   MAX_PASSWORD_LEN);
+
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    /*
+                                     * ВАЖНО:
+                                     * режим НЕ сбрасываем.
+                                     * awaiting_create_room_password должен остаться 1.
+                                     */
+                                    ui_input_redraw_masked(stdin_line, stdin_line_len);
+                                    continue;
+                                }
+
+                                if (password_len < MIN_PASSWORD_LEN)
+                                {
+                                    ui_print_error("MINIMUM PASSWORD LENGTH IS %d SYMBOLS",
+                                                   MIN_PASSWORD_LEN);
+
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    /*
+                                     * ВАЖНО:
+                                     * режим НЕ сбрасываем.
+                                     * пользователь должен ввести пароль ещё раз.
+                                     */
+                                    ui_input_redraw_masked(stdin_line, stdin_line_len);
+                                    continue;
+                                }
+
+                                uint8_t room_key[ROOM_KEY_LEN];
+
+                                if (RAND_bytes(room_key, ROOM_KEY_LEN) != 1)
+                                {
+                                    ossl_print_error("RAND_bytes");
+
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+                                    OPENSSL_cleanse(room_key, sizeof(room_key));
+
+                                    goto cleanup;
+                                }
+
+                                if (client_send_pkt_room_create_password(epfd, c,
+                                                                         pending_password_room_id,
+                                                                         stdin_line, room_key) < 0)
+                                {
+                                    OPENSSL_cleanse(room_key, sizeof(room_key));
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    goto cleanup;
+                                }
+
+                                OPENSSL_cleanse(room_key, sizeof(room_key));
+                                OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                stdin_line_len = 0;
+
+                                awaiting_create_room_password = 0;
+                                pending_password_room_id      = 0;
+
+                                ui_print_local("Password room create request sent");
+                                ui_input_redraw(stdin_line, stdin_line_len);
+                                continue;
                             }
+                            else if (awaiting_room_password)
+                            {
+                                /*
+                                 * Пароль для ВХОДА в комнату.
+                                 * Вот тут уже можно try_decrypt_room_key_ex.
+                                 */
+
+                                if (strcmp(stdin_line, "exit") == 0)
+                                {
+                                    awaiting_room_password   = 0;
+                                    pending_password_room_id = 0;
+                                    c->room_state            = ROOM_READY;
+                                    memset(&pending_rpi, 0, sizeof(pending_rpi));
+
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_print_local("Room join cancelled");
+                                    ui_input_redraw(stdin_line, stdin_line_len);
+                                    continue;
+                                }
+
+                                size_t password_len = strlen(stdin_line);
+
+                                if (password_len > MAX_PASSWORD_LEN)
+                                {
+                                    ui_print_error("MAXIMUM PASSWORD LENGTH IS %d SYMBOLS",
+                                                   MAX_PASSWORD_LEN);
+
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_input_redraw_masked(stdin_line, stdin_line_len);
+                                    continue;
+                                }
+
+                                if (password_len < MIN_PASSWORD_LEN)
+                                {
+                                    ui_print_error("MINIMUM PASSWORD LENGTH IS %d SYMBOLS",
+                                                   MIN_PASSWORD_LEN);
+
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_input_redraw_masked(stdin_line, stdin_line_len);
+                                    continue;
+                                }
+
+                                uint8_t room_key[ROOM_KEY_LEN];
+                                uint8_t enc_key[PASSWORD_KEY_LEN];
+                                uint8_t mac_key[PASSWORD_KEY_LEN];
+
+                                memset(room_key, 0, sizeof(room_key));
+                                memset(enc_key, 0, sizeof(enc_key));
+                                memset(mac_key, 0, sizeof(mac_key));
+
+                                if (try_decrypt_room_key_ex(pending_password_room_id,
+                                                            (uint8_t*)stdin_line,
+                                                            (uint16_t)password_len, &pending_rpi,
+                                                            room_key, enc_key, mac_key) < 0)
+                                {
+                                    OPENSSL_cleanse(room_key, sizeof(room_key));
+                                    OPENSSL_cleanse(enc_key, sizeof(enc_key));
+                                    OPENSSL_cleanse(mac_key, sizeof(mac_key));
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_print_error("Wrong room password");
+                                    ui_input_redraw_masked(stdin_line, stdin_line_len);
+                                    continue;
+                                }
+
+                                uint8_t verifier[ROOM_PASSWORD_VERIFIER_LEN];
+                                memset(verifier, 0, sizeof(verifier));
+
+                                if (get_verifier(mac_key, pending_password_room_id,
+                                                 pending_rpi.epoch, verifier) < 0)
+                                {
+                                    OPENSSL_cleanse(room_key, sizeof(room_key));
+                                    OPENSSL_cleanse(enc_key, sizeof(enc_key));
+                                    OPENSSL_cleanse(mac_key, sizeof(mac_key));
+                                    OPENSSL_cleanse(verifier, sizeof(verifier));
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_print_error("get_verifier failed");
+                                    goto cleanup;
+                                }
+
+                                if (save_password_room_session(
+                                        rooms, MAX_ROOMS, pending_password_room_id, enc_key,
+                                        mac_key, pending_rpi.salt, pending_rpi.epoch, room_key) < 0)
+                                {
+                                    OPENSSL_cleanse(room_key, sizeof(room_key));
+                                    OPENSSL_cleanse(enc_key, sizeof(enc_key));
+                                    OPENSSL_cleanse(mac_key, sizeof(mac_key));
+                                    OPENSSL_cleanse(verifier, sizeof(verifier));
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_print_error("save_password_room_session failed");
+                                    goto cleanup;
+                                }
+
+                                if (client_send_pkt_room_unlock(epfd, c, pending_password_room_id,
+                                                                pending_rpi.epoch, verifier) < 0)
+                                {
+                                    OPENSSL_cleanse(room_key, sizeof(room_key));
+                                    OPENSSL_cleanse(enc_key, sizeof(enc_key));
+                                    OPENSSL_cleanse(mac_key, sizeof(mac_key));
+                                    OPENSSL_cleanse(verifier, sizeof(verifier));
+                                    OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                    stdin_line_len = 0;
+
+                                    ui_print_error("client_send_pkt_room_unlock failed");
+                                    goto cleanup;
+                                }
+
+                                OPENSSL_cleanse(room_key, sizeof(room_key));
+                                OPENSSL_cleanse(enc_key, sizeof(enc_key));
+                                OPENSSL_cleanse(mac_key, sizeof(mac_key));
+                                OPENSSL_cleanse(verifier, sizeof(verifier));
+                                OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
+                                stdin_line_len = 0;
+
+                                awaiting_room_password   = 0;
+                                pending_password_room_id = 0;
+                                memset(&pending_rpi, 0, sizeof(pending_rpi));
+
+                                c->room_state = ROOM_WAIT_JOIN_OK;
+
+                                ui_print_local("Password accepted. Joining room...");
+                                ui_input_redraw(stdin_line, stdin_line_len);
+                                continue;
+                            }
+                            else
+                            {
+                                if (handle_input(epfd, c, rooms, &gk, stdin_line, stdin_line_len,
+                                                 default_name, &registration_in_progress,
+                                                 &generated_keys_for_registration,
+                                                 &awaiting_create_room_password,
+                                                 &pending_password_room_id) < 0)
+                                {
+                                    goto cleanup;
+                                }
+                            }
+
                             stdin_line_len = 0;
+                            stdin_line[0]  = '\0';
+
+                            if (awaiting_room_password || awaiting_create_room_password)
+                            {
+                                ui_input_redraw_masked(stdin_line, stdin_line_len);
+                            }
+                            else
+                            {
+                                ui_input_redraw(stdin_line, stdin_line_len);
+                            }
                             continue;
                         }
+
+                        if (ch == 127 || ch == '\b')
+                        {
+                            if (stdin_line_len > 0)
+                            {
+                                stdin_line_len--;
+                                stdin_line[stdin_line_len] = '\0';
+                                ui_input_clear();
+                                if (awaiting_room_password || awaiting_create_room_password)
+                                {
+                                    ui_input_redraw_masked(stdin_line, stdin_line_len);
+                                }
+                                else
+                                {
+                                    ui_input_redraw(stdin_line, stdin_line_len);
+                                }
+                            }
+
+                            continue;
+                        }
+
+                        if ((unsigned char)ch < 32)
+                        {
+                            continue;
+                        }
+
                         if (stdin_line_len + 1 >= sizeof(stdin_line))
                         {
-                            printf("[ERROR] INPUT LINE TOO LONG\n");
+                            ui_input_clear();
+                            ui_print_error("INPUT LINE TOO LONG");
+
                             stdin_line_len  = 0;
+                            stdin_line[0]   = '\0';
                             stdin_line_drop = 1;
+
+                            if (awaiting_room_password || awaiting_create_room_password)
+                            {
+                                ui_input_redraw_masked(stdin_line, stdin_line_len);
+                            }
+                            else
+                            {
+                                ui_input_redraw(stdin_line, stdin_line_len);
+                            }
                             continue;
                         }
+
                         stdin_line[stdin_line_len++] = ch;
+                        stdin_line[stdin_line_len]   = '\0';
+
+                        ui_input_clear();
+                        if (awaiting_room_password || awaiting_create_room_password)
+                        {
+                            ui_input_redraw_masked(stdin_line, stdin_line_len);
+                        }
+                        else
+                        {
+                            ui_input_redraw(stdin_line, stdin_line_len);
+                        }
                     }
                 }
             }
-
             if ((ei->item == CLIENT_ITEM) && (cur_evs & EPOLLIN))
             {
+                ui_input_clear();
+
                 Client*  c = (Client*)ei;
                 uint8_t  msg[PAYLOAD_SIZE];
                 uint32_t msg_len = 0;
@@ -306,6 +652,7 @@ int main(int argc, char** argv)
                                 (c->room_state == ROOM_READY || c->room_state == ROOM_SYNCING ||
                                  c->room_state == ROOM_WAIT_ROOM_KEY))
                             {
+
                                 char     joined_name[MAX_NAME_LEN + 1];
                                 uint32_t joined_id = 0;
 
@@ -313,6 +660,10 @@ int main(int argc, char** argv)
                                                                 joined_name) < 0)
                                 {
                                     continue;
+                                }
+                                if (joined_id == c->id)
+                                {
+                                    break;
                                 }
 
                                 int was_ready_before_join = (c->room_state == ROOM_READY);
@@ -325,16 +676,18 @@ int main(int argc, char** argv)
                                     continue;
                                 }
 
-                                printf("[JOIN] %s#%" PRIu32 "\n", joined_name, joined_id);
+                                ui_print_join(joined_name, joined_id);
 
                                 if (was_leader_before_join)
                                 {
                                     PeerWrapSession* peer =
                                         find_peer_wrap_session(peers, MAX_CLIENTS, joined_id);
+
                                     if (!peer)
                                     {
-                                        fprintf(stderr,
-                                                "[E2E] NO PEER SESSION FOR JOINED CLIENT\n");
+                                        ui_print_e2e("No wrap session for peer#%" PRIu32
+                                                     " yet; waiting for key bundle",
+                                                     joined_id);
                                         break;
                                     }
                                     RoomSession* room =
@@ -346,15 +699,15 @@ int main(int argc, char** argv)
                                                 "[E2E] FAILED TO SEND OLD ROOM KEY TO PEEY\n");
                                         break;
                                     }
-                                    printf("[E2E] Sent old room key to joined #%" PRIu32 "\n",
-                                           joined_id);
+                                    ui_print_e2e("Sent old room key to joined #%" PRIu32,
+                                                 joined_id);
                                     if (!am_room_leader(c, ue))
                                     {
                                         c->room_state = ROOM_WAIT_ROOM_KEY;
 
-                                        printf("[E2E] Waiting for new room key after join in "
-                                               "room#%" PRIu32 "\n",
-                                               c->room_id);
+                                        ui_print_e2e("Waiting for new room key after join in "
+                                                     "room#%" PRIu32,
+                                                     c->room_id);
                                     }
                                     if (set_epollout_to_client(epfd, c) < 0)
                                     {
@@ -367,10 +720,9 @@ int main(int argc, char** argv)
 
                                     c->room_state = ROOM_WAIT_ROOM_KEY;
 
-                                    printf(
-                                        "[E2E] Waiting for new room key after join in room#%" PRIu32
-                                        "\n",
-                                        c->room_id);
+                                    printf("[E2E] Waiting for new room key after join in "
+                                           "room#%" PRIu32 "\n",
+                                           c->room_id);
                                 }
                             }
 
@@ -380,93 +732,30 @@ int main(int argc, char** argv)
                         {
                             if (c->room_state != ROOM_JOINING)
                             {
-                                fprintf(stderr, "UNEXPECTED PKT_ROOM_PASSWORD_INFO\n");
+                                ui_print_error("Unexpected PKT_ROOM_PASSWORD_INFO");
                                 break;
                             }
-                            c->room_state = ROOM_PASSWORD_UNLOCKING;
 
-                            uint32_t         room_id;
+                            uint32_t         room_id = 0;
                             RoomPasswordInfo rpi;
+                            memset(&rpi, 0, sizeof(rpi));
+
                             if (client_recv_pkt_room_password_info(msg, msg_len, &room_id, &rpi) <
                                 0)
                             {
-                                fprintf(stderr,
-                                        "[ERROR] client_recv_pkt_room_password_info failed");
+                                ui_print_error("client_recv_pkt_room_password_info failed");
                                 break;
                             }
 
-                            printf("[PASSWORD] Please enter password (or 'exit') for room %" PRIu32
-                                   ": ",
-                                   room_id);
-                            int      try_ret            = -99;
-                            char     password[128]      = {0};
-                            uint8_t* decrypted_room_key = OPENSSL_malloc(ROOM_KEY_LEN);
-                            if (!decrypted_room_key)
-                            {
-                                ossl_print_error("OPENSSL_malloc");
-                                return -1;
-                            }
-                            int     unlocked = 0;
-                            uint8_t verifier[ROOM_PASSWORD_VERIFIER_LEN];
-                            while (try_ret != 0)
-                            {
-                                scanf("%127s", password);
-                                if (strncmp(password, "exit", 4) == 0)
-                                {
-                                    break;
-                                }
-                                uint8_t enc_key[PASSWORD_KEY_LEN];
-                                uint8_t mac_key[PASSWORD_KEY_LEN];
-                                memset(enc_key, 0, PASSWORD_KEY_LEN);
-                                memset(mac_key, 0, PASSWORD_KEY_LEN);
-                                try_ret = try_decrypt_room_key_ex(
-                                    room_id, (uint8_t*)password, (uint16_t)strlen(password), &rpi,
-                                    decrypted_room_key, enc_key, mac_key);
-                                if (try_ret == -1)
-                                {
-                                    fprintf(stderr,
-                                            "[ERROR] try_decrypt_room_key failed. Aborting.");
-                                    break;
-                                }
-                                else if (try_ret == -2)
-                                {
-                                    printf("[ERROR] Wrong password. Please, try again: ");
-                                }
-                                else
-                                {
-                                    if (save_password_room_session(
-                                            rooms, MAX_ROOMS, room_id, enc_key, mac_key, rpi.salt,
-                                            rpi.epoch, decrypted_room_key) < 0)
-                                    {
-                                        fprintf(stderr, "[ERROR] save_room_session failed\n");
-                                        break;
-                                    }
+                            pending_password_room_id = room_id;
+                            pending_rpi              = rpi;
 
-                                    if (get_verifier(mac_key, room_id, rpi.epoch, verifier) < 0)
-                                    {
-                                        fprintf(stderr, "[ERROR] get_verifier failed\n");
-                                        break;
-                                    }
+                            awaiting_room_password = 1;
+                            c->room_state          = ROOM_PASSWORD_UNLOCKING;
 
-                                    OPENSSL_cleanse(password, MAX_PASSWORD_LEN);
-                                    OPENSSL_cleanse(decrypted_room_key, ROOM_KEY_LEN);
-                                    OPENSSL_cleanse(enc_key, PASSWORD_KEY_LEN);
-                                    OPENSSL_cleanse(mac_key, PASSWORD_KEY_LEN);
-                                    OPENSSL_clear_free(decrypted_room_key, ROOM_KEY_LEN);
-                                    unlocked = 1;
-                                    break;
-                                }
-                            }
-                            if (unlocked)
-                            {
-                                if (client_send_pkt_room_unlock(epfd, c, room_id, rpi.epoch,
-                                                                verifier) < 0)
-                                {
-                                    fprintf(stderr, "client_send_pkt_room_unlock failed\n");
-                                    return -1;
-                                }
-                                c->room_state = ROOM_WAIT_JOIN_OK;
-                            }
+                            ui_print_room_info(
+                                "Enter password for room #%" PRIu32 " or type 'exit'.", room_id);
+
                             break;
                         }
                         case PKT_REGISTER_CHALLENGE:
@@ -606,6 +895,7 @@ int main(int argc, char** argv)
                                     kb_free(kb);
                                     continue;
                                 }
+                                kb_free(my_kb);
                                 my_kb = kb;
                                 kb    = NULL;
 
@@ -633,9 +923,21 @@ int main(int argc, char** argv)
                         }
                         case PKT_ROOM_CREATE_OK:
                         {
-                            printf("[ROOM CREATE] Created room #%" PRIu32 ". Use /join %" PRIu32
-                                   " to enter\n",
-                                   h.room_id, h.room_id);
+                            if (msg_len != ROOM_ID_LEN)
+                            {
+                                ui_print_error("BAD PKT_ROOM_CREATE_OK");
+                                break;
+                            }
+
+                            uint32_t created_room_id = get_u32_be(msg);
+
+                            if (created_room_id != h.room_id)
+                            {
+                                ui_print_error("ROOM_CREATE_OK room mismatch");
+                                break;
+                            }
+
+                            ui_print_room_create(created_room_id);
                             break;
                         }
                         case PKT_AUTH_CHALLENGE:
@@ -716,11 +1018,26 @@ int main(int argc, char** argv)
                         }
                         case PKT_ROOM_SYNC_DONE:
                         {
-                            RoomSession* room = find_room_session(rooms, MAX_ROOMS, c->room_id);
                             // ключ уже был получен до sync через пароль
+                            RoomSession* room = find_room_session(rooms, MAX_ROOMS, c->room_id);
+
+                            // если после входа клиент стал лидером, он обязан сделать rekey,
                             if (room)
                             {
-                                c->room_state = ROOM_READY;
+                                if (room_has_peers(ue) && am_room_leader(c, ue))
+                                {
+                                    if (rekey_current_room_auto(epfd, c, peers, MAX_CLIENTS, rooms,
+                                                                MAX_ROOMS, ue, c->room_id) < 0)
+                                    {
+                                        fprintf(stderr, "rekey_current_room_auto failed\n");
+                                        break;
+                                    }
+                                }
+                                else
+                                {
+                                    c->room_state = ROOM_READY;
+                                }
+
                                 break;
                             }
                             if (!room_has_peers(ue))
@@ -730,14 +1047,13 @@ int main(int argc, char** argv)
                                     fprintf(stderr, "create_room_key failed\n");
                                     break;
                                 }
-                                printf("[E2E] Room is empty. Created new room key\n");
+                                ui_print_e2e("Room is empty. Created new room key");
                                 c->room_state = ROOM_READY;
                             }
                             else
                             {
                                 c->room_state = ROOM_WAIT_ROOM_KEY;
-                                printf("[E2E] Waiting for room key in room#%" PRIu32 "\n",
-                                       c->room_id);
+                                ui_print_e2e("Waiting for room key in room#%" PRIu32, c->room_id);
                             }
 
                             break;
@@ -757,10 +1073,36 @@ int main(int argc, char** argv)
                                 continue;
                             }
 
-                            printf("[LEAVE] %s#%" PRIu32 "\n", left_name, left_id);
+                            ui_print_leave(left_name, left_id);
 
                             if (!room_has_peers(ue))
                             {
+                                RoomSession* room = find_room_session(rooms, MAX_ROOMS, c->room_id);
+
+                                if (!room)
+                                {
+                                    fprintf(stderr, "no room session after peer leave\n");
+                                    c->room_state = ROOM_WAIT_ROOM_KEY;
+                                    break;
+                                }
+
+                                if (room->has_password)
+                                {
+                                    if (rekey_current_password_room(epfd, c, peers, MAX_CLIENTS,
+                                                                    rooms, MAX_ROOMS, ue,
+                                                                    c->room_id) < 0)
+                                    {
+                                        fprintf(stderr, "rekey_current_password_room failed\n");
+                                        break;
+                                    }
+
+                                    ui_print_e2e(
+                                        "no peers left; password room rekeyed for room#%" PRIu32,
+                                        c->room_id);
+
+                                    break;
+                                }
+
                                 if (create_room_key(rooms, MAX_ROOMS, c->room_id) < 0)
                                 {
                                     fprintf(stderr, "create_room_key failed\n");
@@ -769,9 +1111,9 @@ int main(int argc, char** argv)
 
                                 c->room_state = ROOM_READY;
 
-                                printf("[E2E] no peers left; created new room key for room#%" PRIu32
-                                       "\n",
-                                       c->room_id);
+                                ui_print_e2e(
+                                    "no peers left; created new room key for room#%" PRIu32,
+                                    c->room_id);
 
                                 break;
                             }
@@ -788,9 +1130,9 @@ int main(int argc, char** argv)
                             else
                             {
                                 c->room_state = ROOM_WAIT_ROOM_KEY;
-                                printf("[E2E] Waiting for new room key after leave in room#%" PRIu32
-                                       "\n",
-                                       c->room_id);
+                                ui_print_e2e(
+                                    "Waiting for new room key after leave in room#%" PRIu32,
+                                    c->room_id);
                             }
 
                             break;
@@ -798,16 +1140,6 @@ int main(int argc, char** argv)
 
                         case PKT_CHAT:
                         {
-                            memset(out, 0, sizeof(out));
-                            if (payload_to_str(msg, msg_len, out, OUT_CAP) == 0)
-                            {
-                                const char* name = find_user_name_by_id(ue, h.sender_id);
-                                if (name == NULL)
-                                {
-                                }
-                                printf("[room %" PRIu32 "] %s#%" PRIu32 ": %s\n", h.room_id,
-                                       name ? name : "NULL", h.sender_id, out);
-                            }
                             break;
                         }
                         case PKT_ERR:
@@ -816,7 +1148,7 @@ int main(int argc, char** argv)
 
                             if (payload_to_str(msg, msg_len, out, OUT_CAP) == 0)
                             {
-                                printf("[ERROR] %s\n", out);
+                                ui_print_error("%s", out);
 
                                 if (c->auth_state == AUTH_CLIENT_WAIT_AUTH_CHALLENGE ||
                                     c->auth_state == AUTH_CLIENT_WAIT_REGISTER_CHALLENGE ||
@@ -825,19 +1157,28 @@ int main(int argc, char** argv)
                                     c->auth_state            = AUTH_NEW;
                                     registration_in_progress = 0;
 
-                                    printf("[LOCAL] You are not logged in.\n");
-                                    printf("[LOCAL] Type /help, /login %s or /register %s.\n",
-                                           c->name, c->name);
+                                    ui_print_local("You are not logged in.");
+                                    ui_print_local("Type /help, /login %s or /register %s.",
+                                                   c->name, c->name);
+                                }
+                                if (c->room_state == ROOM_JOINING ||
+                                    c->room_state == ROOM_PASSWORD_UNLOCKING ||
+                                    c->room_state == ROOM_WAIT_JOIN_OK)
+                                {
+                                    c->room_state            = ROOM_READY;
+                                    awaiting_room_password   = 0;
+                                    pending_password_room_id = 0;
+                                    memset(&pending_rpi, 0, sizeof(pending_rpi));
                                 }
                             }
 
                             break;
                         }
-                        // 1. очистить user list
-                        // 2. перейти в C_WAIT_ROOM_KEY
-                        // 3. не использовать старый room_key для новой комнаты
-                        // 4. создать новый ключ, если в комнате никого нет
-                        // 5. ждать room key, если кто-то уже есть
+                            // 1. очистить user list
+                            // 2. перейти в C_WAIT_ROOM_KEY
+                            // 3. не использовать старый room_key для новой комнаты
+                            // 4. создать новый ключ, если в комнате никого нет
+                            // 5. ждать room key, если кто-то уже есть
                         case PKT_ROOM_CHANGE_OK:
                         {
                             uint32_t prev_room = c->room_id;
@@ -845,19 +1186,21 @@ int main(int argc, char** argv)
                             if (h.room_id == c->room_id)
                             {
                                 c->room_state = ROOM_READY;
-                                printf("[ROOM CHANGE] You are already in room #%" PRIu32 "\n",
-                                       c->room_id);
+                                ui_print_room_same(c->room_id);
                                 break;
                             }
-
+                            RoomSession* room = find_room_session(rooms, MAX_ROOMS, prev_room);
+                            if (room)
+                            {
+                                clear_room_session(room);
+                            }
                             memset(ue, 0, sizeof(UserEntry) * MAX_CLIENTS);
+                            memset(peers, 0, sizeof(PeerWrapSession) * MAX_CLIENTS);
 
                             c->room_id    = h.room_id;
                             c->room_state = ROOM_SYNCING;
 
-                            printf("[ROOM CHANGE] You've changed your room from %" PRIu32
-                                   " to %" PRIu32 "\n",
-                                   prev_room, c->room_id);
+                            ui_print_room_change(prev_room, c->room_id);
 
                             break;
                         }
@@ -895,8 +1238,7 @@ int main(int argc, char** argv)
                                 break;
                             }
                             const char* name = find_user_name_by_id(ue, h.sender_id);
-                            printf("[room #%" PRIu32 "] %s: %s\n", h.room_id, name ? name : "NULL",
-                                   out);
+                            ui_print_msg(out, name ? name : "NULL", h.room_id);
                             OPENSSL_clear_free(payload, payload_len);
                             break;
                         }
@@ -904,10 +1246,18 @@ int main(int argc, char** argv)
                         default:
                         {
                             const char* p_t = packet_type_str(h.type);
-                            printf("[ERROR] UNKNOWN PACKET TYPE: %s\n", p_t);
+                            ui_print_error("UNKNOWN PACKET TYPE: %s", p_t);
                             break;
                         }
                     }
+                }
+                if (awaiting_room_password || awaiting_create_room_password)
+                {
+                    ui_input_redraw_masked(stdin_line, stdin_line_len);
+                }
+                else
+                {
+                    ui_input_redraw(stdin_line, stdin_line_len);
                 }
             }
 

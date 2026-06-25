@@ -7,8 +7,9 @@
 
 int  handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, char* out_buf,
                   ssize_t bytes, const char* default_name, int* registration_in_progress,
-                  int* generated_keys_for_registration);
-void print_help(Client* c);
+                  int* generated_keys_for_registration, int* awaiting_create_room_password,
+                  uint32_t* pending_password_room_id);
+void print_help(Client* c, const char* default_name);
 int  send_name_command(int epfd, Client* c, uint8_t pkt_type, const char* user_name);
 
 #endif // CLIENT_COMMANDS_H

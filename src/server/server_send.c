@@ -46,10 +46,11 @@ int server_send_room_password_info(int epfd, Client* c, uint32_t room_id, RoomPa
     }
     Header h;
     h.flags      = 0;
-    h.room_id    = 0;
+    h.room_id    = room_id;
     h.message_id = next_message_id(message_id);
     h.timestamp  = (uint64_t)time(NULL);
     h.type       = PKT_ROOM_PASSWORD_INFO;
+    h.sender_id  = SERVER_ID;
     h.version    = 1;
 
     if (enqueue_packet(c, &h, buf, buf_len) < 0)

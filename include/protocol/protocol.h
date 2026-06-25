@@ -29,8 +29,7 @@
 // AAD
 // [1  packet_type]
 // [4  sender_id]
-// [4  to_client_id]#define ROOM_PASS_KEY_LEN  32
-
+// [4  to_client_id]
 // [4 room_id]
 // [8  epoch]
 #define PACKET_TYPE_LEN 1
@@ -129,8 +128,8 @@ typedef enum
     // PKT_ROOM_PASSWORD_REKEY клиент отправляет метаданные серверу
     // о новом ключе под тем же паролем
     // client -> server:
-    // new_salt = random(16)
-    // password_key = KDF(password, new_salt)
+    // salt = same salt
+    // password_key = KDF(password, salt)
     // new_nonce = random(32)
     // encrypted_room_key = AEAD_Encrypt(password_key, new_room_key)
     // payload:
@@ -198,7 +197,13 @@ typedef enum
     PKT_BAD_ROOM_ID      = 5,
     PKT_BAD_TIMESTAMP    = 6,
     PKT_BAD_MESSAGE_ID   = 7,
-    PKT_BAD_PAYLOAD_SIZE = 8
+    PKT_BAD_PAYLOAD_SIZE = 8,
+    PKT_BAD_EPOCH        = 9,
+    PKT_BAD_SALT         = 10,
+    PKT_BAD_VERIFIER     = 11,
+    PKT_BAD_NONCE        = 12,
+    PKT_BAD_TAG          = 13,
+    PKT_BAD_ROOM_KEY     = 14
 } PacketState;
 
 #endif

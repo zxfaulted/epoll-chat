@@ -37,6 +37,7 @@ int server_recv_pkt_room_unlock(uint8_t* msg, uint16_t msg_len, uint32_t* out_ro
                                 uint64_t* out_epoch,
                                 uint8_t   out_verifier[ROOM_PASSWORD_VERIFIER_LEN])
 {
+    int ret = -1;
     if (!msg || !out_room_id || !out_epoch || !out_verifier)
     {
         return -1;
@@ -62,14 +63,15 @@ int server_recv_pkt_room_unlock(uint8_t* msg, uint16_t msg_len, uint32_t* out_ro
     {
         return -1;
     }
-
+    ret = 0;
 cleanup:
-    return 0;
+    return ret;
 }
 
 void reject_packet(int epfd, Client* c, int cur_fd, Client* clients[], int* clients_count,
-                   const char* reason, uint32_t* message_id)
+                   const char* reason, ServerRoom* server_rooms, uint32_t rooms_count,
+                   uint32_t* message_id)
 {
     fprintf(stderr, "[REJECT] fd=%d reason=%s\n", cur_fd, reason);
-    disconnect_client(epfd, c, clients, clients_count, message_id);
+    disconnect_client(epfd, c, clients, clients_count, server_rooms, rooms_count, message_id);
 }

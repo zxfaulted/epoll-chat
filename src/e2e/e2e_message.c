@@ -291,7 +291,7 @@ int kuznechik_decrypt_message(uint8_t* nonce, uint8_t* enc_key, uint8_t* msg, in
     }
     if (CRYPTO_memcmp(tag, tag_in, tag_in_len) != 0)
     {
-        fprintf(stderr, "invalid tag\n");
+        // fprintf(stderr, "invalid tag\n");
         goto cleanup;
     }
 
