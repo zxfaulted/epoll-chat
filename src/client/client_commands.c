@@ -309,8 +309,6 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
 
             *awaiting_create_room_password = 1;
             *pending_password_room_id      = (uint32_t)room_id;
-            *awaiting_create_room_password = 1;
-            *pending_password_room_id      = (uint32_t)room_id;
 
             ui_print_local("Please enter password for new room %" PRIu32 " or 'exit' to cancel:",
                            (uint32_t)room_id);

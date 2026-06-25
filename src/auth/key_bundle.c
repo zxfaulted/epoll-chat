@@ -685,21 +685,7 @@ int verify_key_bundle(const uint8_t* data, uint16_t data_len)
         fprintf(stderr, "fingerprint is wrong\n");
         goto cleanup;
     }
-    // // 7. найти name в keystore
-    // int idx = find_in_key_store(items, items_len, name);
-    // if (idx < 0)
-    // {
-    //     goto cleanup;
-    // }
-    // // 8. сравнить identity_pub из bundle с identity_pub из keystore
-    // if (items[idx].pubkey_len != kb->identity_pub_len ||
-    //     memcmp(items[idx].pubkey, kb->identity_pub, kb->identity_pub_len) != 0)
-    // {
-    //     fprintf(stderr, "pubkey is wrong for this name\n");
-    //     goto cleanup;
-    // }
-
-    // 9. der_to_key_pub(identity_pub)
+    // 7. der_to_key_pub(identity_pub)
     if (der_to_key_pub(&public_key, kb->identity_pub, kb->identity_pub_len) < 0)
     {
         fprintf(stderr, "der_to_key_pub failed\n");
@@ -710,7 +696,7 @@ int verify_key_bundle(const uint8_t* data, uint16_t data_len)
         fprintf(stderr, "der_to_key_pub failed\n");
         goto cleanup;
     }
-    // 10. verify_sign(kb, identity_pub_key)
+    // 8. verify_sign(kb, identity_pub_key)
     ret = verify_sign(kb, public_key);
 cleanup:
     if (kb)

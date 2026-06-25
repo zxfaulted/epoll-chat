@@ -135,17 +135,19 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
     {
         return -1;
     }
+    uint32_t room_id = c->room_id;
+
     if (c->room_state == ROOM_READY && c->name[0] != '\0')
     {
-        broadcast_user_event(epfd, c, c->room_id, clients, clients_count, PKT_LEAVE, rooms,
+        broadcast_user_event(epfd, c, room_id, clients, clients_count, PKT_LEAVE, rooms,
                              rooms_count, message_id);
     }
 
     remove_client(epfd, c->ei.fd, clients, clients_count);
 
-    if (server_room_is_empty(clients, *clients_count, c->room_id))
+    if (server_room_is_empty(clients, *clients_count, room_id))
     {
-        server_room_delete_by_id(rooms, rooms_count, c->room_id);
+        server_room_delete_by_id(rooms, rooms_count, room_id);
     }
     return 0;
 }

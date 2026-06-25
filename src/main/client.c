@@ -323,11 +323,8 @@ int main(int argc, char** argv)
                                     OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
                                     stdin_line_len = 0;
 
-                                    /*
-                                     * ВАЖНО:
-                                     * режим НЕ сбрасываем.
-                                     * awaiting_create_room_password должен остаться 1.
-                                     */
+                                    //  режим не сбрасывается
+                                    //  awaiting_create_room_password должен остаться 1
                                     ui_input_redraw_masked(stdin_line, stdin_line_len);
                                     continue;
                                 }
@@ -340,11 +337,8 @@ int main(int argc, char** argv)
                                     OPENSSL_cleanse(stdin_line, sizeof(stdin_line));
                                     stdin_line_len = 0;
 
-                                    /*
-                                     * ВАЖНО:
-                                     * режим НЕ сбрасываем.
-                                     * пользователь должен ввести пароль ещё раз.
-                                     */
+                                    //  режим не сбрасывается
+                                    //  пользователь должен ввести пароль ещё раз
                                     ui_input_redraw_masked(stdin_line, stdin_line_len);
                                     continue;
                                 }
@@ -380,7 +374,8 @@ int main(int argc, char** argv)
                                 awaiting_create_room_password = 0;
                                 pending_password_room_id      = 0;
 
-                                ui_print_local("Password room create request sent");
+                                ui_print_local(
+                                    "Password room create request sent. Waiting for server...");
                                 ui_input_redraw(stdin_line, stdin_line_len);
                                 continue;
                             }
@@ -1301,6 +1296,7 @@ int main(int argc, char** argv)
     ret = 0;
 cleanup:
     kb_free(my_kb);
+    clear_generated_keys(&gk);
     ossl_destroy_crypto(&dflt, &gost);
     if (client_fd >= 0)
     {

@@ -77,7 +77,7 @@ int client_send_pkt_room_create(int epfd, Client* c, uint32_t room_id)
 // [4 room_id]
 // [16 salt]  random
 // [32 nonce] random
-// password_key = PBKDF2(password, salt)
+// password_key = KBKDF(password, salt) с HMAC и md_gost12_256
 // [32 encrypted_room_key] encrypt(password_key, room_key)
 // [16 tag] tag = auth_tag(
 //     key        = password_key,

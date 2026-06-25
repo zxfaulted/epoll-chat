@@ -102,7 +102,7 @@ int parse_pkt_room_create_payload(uint8_t* msg, uint16_t msg_len, uint32_t* out_
 int server_room_create(ServerRoom* rooms, uint16_t rooms_count, uint32_t room_id,
                        uint32_t potential_owner_id)
 {
-    if (server_room_has_owner(rooms, rooms_count, room_id))
+    if (server_room_find_by_id(rooms, rooms_count, room_id))
     {
         fprintf(stderr, "room has already an owner\n");
         return -1;
@@ -129,7 +129,7 @@ int server_room_create_password(ServerRoom* rooms, uint16_t rooms_count, uint32_
     {
         return -1;
     }
-    if (server_room_has_owner(rooms, rooms_count, room_id))
+    if (server_room_find_by_id(rooms, rooms_count, room_id))
     {
         fprintf(stderr, "room has already an owner\n");
         return -1;

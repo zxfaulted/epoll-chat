@@ -1097,15 +1097,14 @@ int main()
                                                 &message_id);
                                             break;
                                         }
-                                        // if (clients_leader_id(clients, clients_count, c->room_id)
-                                        // !=
-                                        //     c->id)
-                                        // {
-                                        //     send_server_error(epfd, c, "YOU ARE NOT THE LEADER",
-                                        //                       &message_id);
-                                        //     set_epollout_to_client(epfd, c);
-                                        //     break;
-                                        // }
+                                        /*
+                                         * PKT_ENC_ROOM_KEY может отправлять любой участник комнаты
+                                         * ключ комнаты рассылается p2p поверх pairwise
+                                         * wrapping key
+                                         * сервер только маршрутизирует пакет и
+                                         * проверяет, что отправитель и получатель находятся в одной
+                                         * комнате
+                                         */
                                         if (forward_room_key_packet(epfd, clients, clients_count, c,
                                                                     &h, msg, msg_len,
                                                                     &message_id) < 0)
@@ -1502,7 +1501,7 @@ int main()
                                     // [4 room_id]
                                     // [16 salt]  random
                                     // [32 nonce] random
-                                    // password_key = PBKDF2(password, salt)
+                                    // password_key = KBKDF(password, salt) с HMAC и md_gost12_256
                                     // [32 encrypted_room_key] encrypt(password_key, room_key)
                                     // [16 tag] tag = auth_tag(
                                     //     key        = password_key,

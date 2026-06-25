@@ -297,11 +297,6 @@ int keys_exist(const char* name)
            vko_public_exists;
 }
 
-// int client_join_room_with_key(int epfd, Client* c, uint32_t room_id,
-//                               char password[MAX_PASSWORD_LEN])
-// {
-// }
-
 void clear_generated_keys(GeneratedKeys* gk)
 {
     if (!gk)

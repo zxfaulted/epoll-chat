@@ -109,7 +109,7 @@ cleanup:
 // [8 epoch]
 // [16 salt]  random
 // [32 nonce] random
-// password_key = PBKDF2(password, salt)
+// password_key = KBKDF(password, salt) с HMAC и md_gost12_256
 // [32 encrypted_room_key] encrypt(password_key, room_key)
 // [16 tag] tag = auth_tag(
 //     key        = password_key,
@@ -191,7 +191,7 @@ int build_pkt_room_create_password_payload(uint32_t room_id, uint8_t* password,
 // [8 epoch]
 // [16 salt]  random
 // [32 nonce] random
-// password_key = PBKDF2(password, salt)
+// password_key = KBKDF(password, salt) с HMAC и md_gost12_256
 // [32 encrypted_room_key] encrypt(password_key, room_key)
 // [16 tag] tag = auth_tag(
 //     key        = password_key,
@@ -248,7 +248,7 @@ int build_pkt_room_password_rekey_payload(uint32_t room_id, RoomPasswordInfo* rp
 // [8 epoch]
 // [16 salt]  random
 // [32 nonce] random
-// password_key = PBKDF2(password, salt)
+// password_key = KBKDF(password, salt) с HMAC и md_gost12_256
 // [32 encrypted_room_key] encrypt(password_key, room_key)
 // [16 tag] tag = auth_tag(
 //     key        = password_key,
@@ -311,7 +311,7 @@ cleanup:
 // [4 room_id]
 // [16 salt]  random
 // [32 nonce] random
-// password_key = PBKDF2(password, salt)
+// password_key = KBKDF(password, salt) с HMAC и md_gost12_256
 // [32 encrypted_room_key] encrypt(password_key, room_key)
 // [16 tag] tag = auth_tag(
 //     key        = password_key,
