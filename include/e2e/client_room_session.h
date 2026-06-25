@@ -67,5 +67,7 @@ void         clear_room_session(RoomSession* room);
 int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uint16_t peers_count,
                                 RoomSession* rooms, uint16_t rooms_count, UserEntry* ue,
                                 uint32_t room_id);
-
+ int all_room_peers_have_wrap(PeerWrapSession* peers,
+                                    size_t peers_count,
+                                    UserEntry* ue);
 #endif // ROOM_H

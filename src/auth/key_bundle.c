@@ -870,28 +870,38 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
 
     ui_print_e2e("Saved wrapping key for peer#%" PRIu32, kb->client_id);
 
-    if (c->room_state == ROOM_READY && user_entry_exists(ue, kb->client_id) &&
-        am_room_leader(c, ue))
+    if (c->room_state == ROOM_READY &&
+    user_entry_exists(ue, kb->client_id) &&
+    am_room_leader(c, ue))
     {
         RoomSession* room = get_room_session(rooms, rooms_count, c->room_id);
-
-        if (room)
+        if (!room)
         {
-            if (send_room_key_to_peer(epfd, c, kb->client_id, wrapping_key, room) < 0)
-            {
-                fprintf(stderr, "send_room_key_to_peer failed\n");
-                goto cleanup;
-            }
-
-            if (set_epollout_to_client(epfd, c) < 0)
-            {
-                fprintf(stderr, "set_epollout_to_client failed\n");
-                goto cleanup;
-            }
-
-            ui_print_e2e("I am leader. Sent room key to peer#%" PRIu32 ", epoch=%" PRIu64 "",
-                         kb->client_id, get_room_epoch(room));
+            ret = 0;
+            goto cleanup;
         }
+        if (!all_room_peers_have_wrap(peers, peers_count, ue))
+        {
+            ret = 0;
+            goto cleanup;
+        }
+        // не отправляем старый room key
+        // после появления wrapping key делаем новый epoch и новый room key
+        if (rekey_current_room_auto(epfd, c,
+                                    peers, (uint16_t)peers_count,
+                                    rooms, (uint16_t)rooms_count,
+                                    ue,
+                                    c->room_id) < 0)
+        {
+            fprintf(stderr, "rekey_current_room_auto failed\n");
+            goto cleanup;
+        }
+
+        RoomSession* new_room = get_room_session(rooms, rooms_count, c->room_id);
+        ui_print_e2e("I am leader. Rekeyed room after peer#%" PRIu32
+                    " joined, epoch=%" PRIu64,
+                    kb->client_id,
+                    new_room ? get_room_epoch(new_room) : 0);
     }
     ret = 0;
 

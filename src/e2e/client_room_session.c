@@ -692,3 +692,24 @@ void clear_room_session(RoomSession* room)
 {
     OPENSSL_cleanse(room, sizeof(*room));
 }
+
+int all_room_peers_have_wrap(PeerWrapSession* peers,
+                                    size_t peers_count,
+                                    UserEntry* ue)
+{
+    for (int i = 0; i < MAX_CLIENTS; ++i)
+    {
+        if (!ue[i].used)
+        {
+            continue;
+        }
+
+        if (!find_peer_wrap_session(peers, peers_count, ue[i].id))
+        {
+            ui_print_e2e("waiting for wrapping key for peer#%" PRIu32, ue[i].id);
+            return 0;
+        }
+    }
+
+    return 1;
+}

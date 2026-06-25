@@ -662,40 +662,39 @@ int main(int argc, char** argv)
 
                                 if (was_leader_before_join)
                                 {
-                                    PeerWrapSession* peer =
-                                        find_peer_wrap_session(peers, MAX_CLIENTS, joined_id);
-
-                                    if (!peer)
+                                    if (!find_peer_wrap_session(peers, MAX_CLIENTS, joined_id))
                                     {
                                         ui_print_e2e("No wrap session for peer#%" PRIu32
-                                                     " yet; waiting for key bundle",
-                                                     joined_id);
+                                                    " yet; waiting for key bundle",
+                                                    joined_id);
                                         break;
                                     }
-                                    RoomSession* room =
-                                        find_room_session(rooms, MAX_ROOMS, c->room_id);
-                                    if (send_room_key_to_peer(epfd, c, joined_id,
-                                                              peer->wrapping_key, room) < 0)
-                                    {
-                                        fprintf(stderr,
-                                                "[E2E] FAILED TO SEND OLD ROOM KEY TO PEER\n");
-                                        break;
-                                    }
-                                    ui_print_e2e("Sent old room key to joined #%" PRIu32,
-                                                 joined_id);
-                                    if (!am_room_leader(c, ue))
-                                    {
-                                        c->room_state = ROOM_WAIT_ROOM_KEY;
 
-                                        ui_print_e2e("Waiting for new room key after join in "
-                                                     "room#%" PRIu32,
-                                                     c->room_id);
-                                    }
-                                    if (set_epollout_to_client(epfd, c) < 0)
+                                    if (!all_room_peers_have_wrap(peers, MAX_CLIENTS, ue))
                                     {
-                                        fprintf(stderr, "set_epollout_to_client failed\n");
                                         break;
                                     }
+
+                                    if (rekey_current_room_auto(epfd, c,
+                                                                peers, MAX_CLIENTS,
+                                                                rooms, MAX_ROOMS,
+                                                                ue,
+                                                                c->room_id) < 0)
+                                    {
+                                        fprintf(stderr, "rekey_current_room_auto failed\n");
+                                        break;
+                                    }
+
+                                    RoomSession* room = get_room_session(rooms, MAX_ROOMS, c->room_id);
+                                    ui_print_e2e("Rekeyed room after join #%" PRIu32 ", epoch=%" PRIu64,
+                                                joined_id,
+                                                room ? get_room_epoch(room) : 0);
+                                }
+                                else if (was_ready_before_join)
+                                {
+                                    c->room_state = ROOM_WAIT_ROOM_KEY;
+                                    ui_print_e2e("Waiting for new room key after join in room#%" PRIu32,
+                                                c->room_id);
                                 }
                                 else if (was_ready_before_join)
                                 {
