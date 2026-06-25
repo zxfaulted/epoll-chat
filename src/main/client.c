@@ -86,11 +86,6 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (enable_raw_terminal() < 0)
-    {
-        goto cleanup;
-    }
-
     OSSL_PROVIDER* dflt = NULL;
     OSSL_PROVIDER* gost = NULL;
     if (ossl_init_crypto(&dflt, &gost) < 0)
@@ -223,6 +218,11 @@ int main(int argc, char** argv)
     if (name_len == 0 || name_len > MAX_NAME_LEN)
     {
         fprintf(stderr, "bad name length\n");
+        goto cleanup;
+    }
+
+    if (enable_raw_terminal() < 0)
+    {
         goto cleanup;
     }
 

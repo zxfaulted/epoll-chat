@@ -297,10 +297,18 @@ int handle_input(int epfd, Client* c, RoomSession* rooms, GeneratedKeys* gk, cha
 
             if (!awaiting_create_room_password || !pending_password_room_id)
             {
-                ui_print_error("INTERNAL ERROR: password create state is NULL");
+                ui_print_error("PASSWORD CREATE STATE POINTERS ARE NULL");
                 return -1;
             }
 
+            if (*awaiting_create_room_password)
+            {
+                ui_print_local("Already waiting for password. Type 'exit' to cancel.");
+                return 0;
+            }
+
+            *awaiting_create_room_password = 1;
+            *pending_password_room_id      = (uint32_t)room_id;
             *awaiting_create_room_password = 1;
             *pending_password_room_id      = (uint32_t)room_id;
 

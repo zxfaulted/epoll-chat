@@ -31,5 +31,6 @@ ServerRoom* server_room_find_by_id(ServerRoom* rooms, uint32_t rooms_count, uint
 uint32_t server_room_is_owner_of_any(ServerRoom* rooms, uint32_t rooms_count, uint32_t client_id);
 int      server_room_update_metadata(ServerRoom* room, RoomPasswordInfo* rpi);
 void     server_room_delete_by_owner(ServerRoom* rooms, uint32_t rooms_count, uint32_t owner_id);
+void     server_room_delete_by_id(ServerRoom* rooms, uint32_t rooms_count, uint32_t room_id);
 
 #endif // SERVER_ROOM_H

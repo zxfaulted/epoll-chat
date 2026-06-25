@@ -141,10 +141,48 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
                              rooms_count, message_id);
     }
 
-    server_room_delete_by_owner(rooms, rooms_count, c->id);
-
     remove_client(epfd, c->ei.fd, clients, clients_count);
+
+    if (server_room_is_empty(clients, *clients_count, c->room_id))
+    {
+        server_room_delete_by_id(rooms, rooms_count, c->room_id);
+    }
     return 0;
+}
+
+int server_room_is_empty(Client* clients[], int clients_count, uint32_t room_id)
+{
+    if (!clients)
+    {
+        return 1;
+    }
+
+    for (int i = 0; i < clients_count; ++i)
+    {
+        Client* client = clients[i];
+
+        if (!client)
+        {
+            continue;
+        }
+
+        if (client->auth_state != AUTH_READY)
+        {
+            continue;
+        }
+
+        if (client->room_state != ROOM_READY)
+        {
+            continue;
+        }
+
+        if (client->room_id == room_id)
+        {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 uint32_t clients_leader_id(Client** clients, int clients_count, uint32_t room_id)

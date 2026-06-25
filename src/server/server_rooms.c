@@ -190,3 +190,27 @@ void server_room_delete_by_owner(ServerRoom* rooms, uint32_t rooms_count, uint32
         }
     }
 }
+
+void server_room_delete_by_id(ServerRoom* rooms, uint32_t rooms_count, uint32_t room_id)
+{
+    if (!rooms)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < rooms_count; ++i)
+    {
+        if (!rooms[i].used)
+        {
+            continue;
+        }
+
+        if (rooms[i].room_id != room_id)
+        {
+            continue;
+        }
+
+        memset(&rooms[i], 0, sizeof(rooms[i]));
+        return;
+    }
+}

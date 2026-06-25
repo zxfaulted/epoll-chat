@@ -16,5 +16,6 @@ int disconnect_client(int epfd, Client* c, Client* clients[], int* clients_count
 uint32_t clients_leader_id(Client** clients, int clients_count, uint32_t room_id);
 int      set_client_name(Client* c, const char* msg, size_t msg_len);
 int      active_name_exists(Client* clients[], int clients_count, const char* name);
+int      server_room_is_empty(Client* clients[], int clients_count, uint32_t room_id);
 
 #endif // SERVER_CLIENTS_H
