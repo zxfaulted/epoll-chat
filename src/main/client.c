@@ -80,11 +80,11 @@ int main(int argc, char** argv)
     {
         default_name = argv[1];
     }
-    else
-    {
-        printf("ENTER YOUR NAME LIKE './client NAME'\n");
-        return -1;
-    }
+    // else
+    // {
+    //     printf("ENTER YOUR NAME LIKE './client NAME'\n");
+    //     return -1;
+    // }
 
     OSSL_PROVIDER* dflt = NULL;
     OSSL_PROVIDER* gost = NULL;
