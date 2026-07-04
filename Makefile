@@ -46,6 +46,8 @@ LDLIBS := -lssl -lcrypto
 
 .DEFAULT_GOAL := all
 
+NAME ?= Client
+
 .PHONY: all clean deps stop demo client alice bob server runtime
 
 
@@ -90,12 +92,12 @@ server: $(SERVER)
 	sleep 0.7
 	wmctrl -r CHAT_SERVER -e 0,1410,40,400,420
 
-client: $(CLIENT)
+client: $(CLIENT) 
 	@command -v kitty >/dev/null || { echo "kitty not found"; exit 1; }
 	@command -v wmctrl >/dev/null || { echo "wmctrl not found"; exit 1; }
-	kitty --title CHAT_CLIENT sh -lc '$(RUN_ENV) ./$(CLIENT) Client; echo; echo "[Client exited]"; exec sh' 2>/dev/null &
+	kitty --title CHAT_$(NAME) sh -lc '$(RUN_ENV) ./$(CLIENT) $(NAME); echo; echo "[Client exited]"; exec sh' 2>/dev/null &
 	sleep 0.7
-	wmctrl -r CHAT_CLIENT -e 0,100,40,650,420
+	wmctrl -r CHAT_$(NAME) -e 0,100,40,650,420
 
 alice: $(CLIENT)
 	@command -v kitty >/dev/null || { echo "kitty not found"; exit 1; }
