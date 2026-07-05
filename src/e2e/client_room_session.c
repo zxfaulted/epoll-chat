@@ -282,6 +282,31 @@ RoomSession* find_room_session(RoomSession* rooms, size_t rooms_count, uint32_t 
     return NULL;
 }
 
+static int all_room_peers_have_wrap(PeerWrapSession* peers, size_t peers_count, UserEntry* ue,
+                                    uint32_t self_id)
+{
+    if (!peers || !ue)
+    {
+        return 0;
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (!ue[i].used || ue[i].id == self_id)
+        {
+            continue;
+        }
+
+        if (!find_peer_wrap_session(peers, peers_count, ue[i].id))
+        {
+            ui_print_e2e("no wrapping key for peer#%" PRIu32 "; rekey postponed", ue[i].id);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 int rekey_current_room(int epfd, Client* c, PeerWrapSession* peers, size_t peers_count,
                        RoomSession* rooms, size_t rooms_count, UserEntry* ue)
 {
