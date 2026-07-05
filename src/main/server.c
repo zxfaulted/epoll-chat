@@ -147,7 +147,6 @@ int main()
             // появился новый клиент
             if (ei->item == SERVER_ITEM)
             {
-                // Server* s = (Server*)ei;
                 if (add_new_client(epfd, server_fd, clients, &clients_count, &client_id) < 0)
                 {
                     continue;
@@ -1071,13 +1070,11 @@ int main()
                                         uint32_t to_client_id = get_u32_be(msg);
                                         Client*  to =
                                             find_client(clients, clients_count, to_client_id);
+
                                         if (!to)
                                         {
-                                            fprintf(stderr, "find_client is NULL\n");
-                                            send_server_error(
-                                                epfd, c,
-                                                "PKT_ENC_ROOM_KEY: NO TARGET CLIENT WITH THIS ID",
-                                                &message_id);
+                                            fprintf(stderr, "pkt_enc_room_key: target client is "
+                                                            "already gone; drop stale packet\n");
                                             break;
                                         }
                                         if (to->room_id != c->room_id)
@@ -1670,18 +1667,6 @@ int main()
                                         {
                                             reject_packet(epfd, c, c->ei.fd, clients,
                                                           &clients_count, "REKEY ROOM MISMATCH",
-                                                          server_rooms, MAX_ROOMS, &message_id);
-                                            client_removed = 1;
-                                            break;
-                                        }
-
-                                        if (clients_leader_id(clients, clients_count, room_id) !=
-                                            c->id)
-                                        {
-                                            reject_packet(epfd, c, c->ei.fd, clients,
-                                                          &clients_count,
-                                                          "YOU ARE NOT THE LEADER TO SEND SERVER "
-                                                          "ROOM PASSWORD METADATA",
                                                           server_rooms, MAX_ROOMS, &message_id);
                                             client_removed = 1;
                                             break;

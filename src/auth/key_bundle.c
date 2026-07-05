@@ -785,10 +785,11 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
               EVP_PKEY* my_vko_private, PeerWrapSession* peers, size_t peers_count,
               RoomSession* rooms, size_t rooms_count, UserEntry* ue, Client* c)
 {
-    if (!data || !my_kb || !peers || !rooms || !c)
+    if (!data || !my_kb || !peers || !rooms || !ue || !c)
     {
         return -1;
     }
+
     int        ret      = -1;
     KeyBundle* kb       = NULL;
     uint8_t*   info     = NULL;
@@ -797,6 +798,8 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
     EVP_PKEY*  peer_vko_pub   = NULL;
     uint8_t*   raw_secret     = NULL;
     size_t     raw_secret_len = 0;
+
+    memset(wrapping_key, 0, sizeof(wrapping_key));
 
     if (verify_key_bundle(data, data_len) != 1)
     {
@@ -828,6 +831,7 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
         fprintf(stderr, "vko_pub_len mismatch\n");
         goto cleanup;
     }
+
     if (der_to_key_pub(&peer_vko_pub, kb->vko_pub, kb->vko_pub_len) < 0 || !peer_vko_pub)
     {
         fprintf(stderr, "der_to_key_pub failed\n");
@@ -853,7 +857,9 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
         fprintf(stderr, "raw_secret_len is too large\n");
         goto cleanup;
     }
+
     const unsigned char salt[] = "chat_v1";
+
     if (get_kdf(raw_secret, (uint16_t)raw_secret_len, salt, (uint16_t)(sizeof(salt) - 1), info,
                 info_len, wrapping_key, sizeof(wrapping_key)) < 0)
     {
@@ -864,33 +870,30 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
     if (save_peer_wrap_session(peers, peers_count, kb->client_id, kb->fingerprint,
                                kb->fingerprint_len, wrapping_key) < 0)
     {
-        fprintf(stderr, "get_kdf failed\n");
+        fprintf(stderr, "save_peer_wrap_session failed\n");
         goto cleanup;
     }
 
     ui_print_e2e("Saved wrapping key for peer#%" PRIu32, kb->client_id);
 
-    if (c->room_state == ROOM_READY &&
-    user_entry_exists(ue, kb->client_id) &&
-    am_room_leader(c, ue))
+    if (c->room_state == ROOM_WAIT_ROOM_KEY && user_entry_exists(ue, kb->client_id) &&
+        am_room_leader_excluding(c, ue, kb->client_id))
     {
         RoomSession* room = get_room_session(rooms, rooms_count, c->room_id);
+
         if (!room)
         {
             ret = 0;
             goto cleanup;
         }
-        if (!all_room_peers_have_wrap(peers, peers_count, ue))
+
+        if (!all_room_peers_have_wrap(peers, peers_count, ue, c->id))
         {
             ret = 0;
             goto cleanup;
         }
-        // не отправляем старый room key
-        // после появления wrapping key делаем новый epoch и новый room key
-        if (rekey_current_room_auto(epfd, c,
-                                    peers, (uint16_t)peers_count,
-                                    rooms, (uint16_t)rooms_count,
-                                    ue,
+
+        if (rekey_current_room_auto(epfd, c, peers, peers_count, rooms, rooms_count, ue,
                                     c->room_id) < 0)
         {
             fprintf(stderr, "rekey_current_room_auto failed\n");
@@ -898,11 +901,12 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
         }
 
         RoomSession* new_room = get_room_session(rooms, rooms_count, c->room_id);
-        ui_print_e2e("I am leader. Rekeyed room after peer#%" PRIu32
-                    " joined, epoch=%" PRIu64,
-                    kb->client_id,
-                    new_room ? get_room_epoch(new_room) : 0);
+
+        ui_print_e2e("I am leader. Rekeyed room after key bundle from peer#%" PRIu32
+                     ", epoch=%" PRIu64,
+                     kb->client_id, new_room ? get_room_epoch(new_room) : 0);
     }
+
     ret = 0;
 
 cleanup:
@@ -911,10 +915,12 @@ cleanup:
         OPENSSL_cleanse(raw_secret, raw_secret_len);
         OPENSSL_free(raw_secret);
     }
+
     kb_free(kb);
     EVP_PKEY_free(peer_vko_pub);
     OPENSSL_free(info);
     OPENSSL_cleanse(wrapping_key, sizeof(wrapping_key));
+
     return ret;
 }
 

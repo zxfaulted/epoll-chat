@@ -664,37 +664,32 @@ int main(int argc, char** argv)
                                 {
                                     if (!find_peer_wrap_session(peers, MAX_CLIENTS, joined_id))
                                     {
+                                        c->room_state = ROOM_WAIT_ROOM_KEY;
+
                                         ui_print_e2e("No wrap session for peer#%" PRIu32
-                                                    " yet; waiting for key bundle",
-                                                    joined_id);
+                                                     " yet; waiting for key bundle",
+                                                     joined_id);
                                         break;
                                     }
 
-                                    if (!all_room_peers_have_wrap(peers, MAX_CLIENTS, ue))
+                                    if (!all_room_peers_have_wrap(peers, MAX_CLIENTS, ue, c->id))
                                     {
+                                        c->room_state = ROOM_WAIT_ROOM_KEY;
                                         break;
                                     }
 
-                                    if (rekey_current_room_auto(epfd, c,
-                                                                peers, MAX_CLIENTS,
-                                                                rooms, MAX_ROOMS,
-                                                                ue,
-                                                                c->room_id) < 0)
+                                    if (rekey_current_room_auto(epfd, c, peers, MAX_CLIENTS, rooms,
+                                                                MAX_ROOMS, ue, c->room_id) < 0)
                                     {
                                         fprintf(stderr, "rekey_current_room_auto failed\n");
                                         break;
                                     }
 
-                                    RoomSession* room = get_room_session(rooms, MAX_ROOMS, c->room_id);
-                                    ui_print_e2e("Rekeyed room after join #%" PRIu32 ", epoch=%" PRIu64,
-                                                joined_id,
-                                                room ? get_room_epoch(room) : 0);
-                                }
-                                else if (was_ready_before_join)
-                                {
-                                    c->room_state = ROOM_WAIT_ROOM_KEY;
-                                    ui_print_e2e("Waiting for new room key after join in room#%" PRIu32,
-                                                c->room_id);
+                                    RoomSession* room =
+                                        get_room_session(rooms, MAX_ROOMS, c->room_id);
+                                    ui_print_e2e("Rekeyed room after join #%" PRIu32
+                                                 ", epoch=%" PRIu64,
+                                                 joined_id, room ? get_room_epoch(room) : 0);
                                 }
                                 else if (was_ready_before_join)
                                 {
@@ -984,43 +979,20 @@ int main(int argc, char** argv)
                             if (r == ROOM_KEY_ACCEPTED)
                             {
                                 c->room_state = ROOM_READY;
-                                if (room_has_peers(ue) && am_room_leader(c, ue))
-                                {
-                                    if (rekey_current_room_auto(epfd, c, peers, MAX_CLIENTS, rooms,
-                                                                MAX_ROOMS, ue, c->room_id) < 0)
-                                    {
-                                        fprintf(stderr, "rekey_current_room_auto failed\n");
-                                        break;
-                                    }
-                                }
                             }
 
                             break;
                         }
                         case PKT_ROOM_SYNC_DONE:
                         {
-                            // ключ уже был получен до sync через пароль
                             RoomSession* room = find_room_session(rooms, MAX_ROOMS, c->room_id);
 
-                            // если после входа клиент стал лидером, он обязан сделать rekey,
                             if (room)
                             {
-                                if (room_has_peers(ue) && am_room_leader(c, ue))
-                                {
-                                    if (rekey_current_room_auto(epfd, c, peers, MAX_CLIENTS, rooms,
-                                                                MAX_ROOMS, ue, c->room_id) < 0)
-                                    {
-                                        fprintf(stderr, "rekey_current_room_auto failed\n");
-                                        break;
-                                    }
-                                }
-                                else
-                                {
-                                    c->room_state = ROOM_READY;
-                                }
-
+                                c->room_state = ROOM_READY;
                                 break;
                             }
+
                             if (!room_has_peers(ue))
                             {
                                 if (create_room_key(rooms, MAX_ROOMS, c->room_id) < 0)
@@ -1028,15 +1000,14 @@ int main(int argc, char** argv)
                                     fprintf(stderr, "create_room_key failed\n");
                                     break;
                                 }
-                                ui_print_e2e("Room is empty. Created new room key");
+
                                 c->room_state = ROOM_READY;
-                            }
-                            else
-                            {
-                                c->room_state = ROOM_WAIT_ROOM_KEY;
-                                ui_print_e2e("Waiting for room key in room#%" PRIu32, c->room_id);
+                                ui_print_e2e("Room is empty. Created new room key");
+                                break;
                             }
 
+                            c->room_state = ROOM_WAIT_ROOM_KEY;
+                            ui_print_e2e("Waiting for room key in room#%" PRIu32, c->room_id);
                             break;
                         }
                         case PKT_LEAVE:

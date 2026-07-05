@@ -211,6 +211,38 @@ int am_room_leader(const Client* c, const UserEntry* ue)
     return room_leader_id(c, ue) == c->id;
 }
 
+int am_room_leader_excluding(const Client* c, const UserEntry* ue, uint32_t exclude_id)
+{
+    uint32_t leader_id;
+
+    if (!c || !ue || c->id == 0)
+    {
+        return 0;
+    }
+
+    leader_id = c->id;
+
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (!ue[i].used)
+        {
+            continue;
+        }
+
+        if (ue[i].id == exclude_id)
+        {
+            continue;
+        }
+
+        if (ue[i].id < leader_id)
+        {
+            leader_id = ue[i].id;
+        }
+    }
+
+    return leader_id == c->id;
+}
+
 int create_room_key(RoomSession* rooms, size_t count, uint32_t room_id)
 {
     RoomSession* old_room = get_room_session(rooms, count, room_id);
@@ -256,6 +288,12 @@ int rekey_current_room(int epfd, Client* c, PeerWrapSession* peers, size_t peers
     if (room_has_peers(ue) && !get_room_session(rooms, rooms_count, c->room_id))
     {
         fprintf(stderr, "[E2E] no old room key; cannot rekey safely\n");
+        c->room_state = ROOM_WAIT_ROOM_KEY;
+        return 0;
+    }
+
+    if (room_has_peers(ue) && !all_room_peers_have_wrap(peers, peers_count, ue, c->id))
+    {
         c->room_state = ROOM_WAIT_ROOM_KEY;
         return 0;
     }
@@ -587,6 +625,11 @@ int rekey_current_password_room(int epfd, Client* c, PeerWrapSession* peers, uin
     {
         return ret;
     }
+    if (room_has_peers(ue) && !all_room_peers_have_wrap(peers, peers_count, ue, c->id))
+    {
+        c->room_state = ROOM_WAIT_ROOM_KEY;
+        return 0;
+    }
 
     uint64_t new_epoch = room->epoch + 1;
 
@@ -693,13 +736,16 @@ void clear_room_session(RoomSession* room)
     OPENSSL_cleanse(room, sizeof(*room));
 }
 
-int all_room_peers_have_wrap(PeerWrapSession* peers,
-                                    size_t peers_count,
-                                    UserEntry* ue)
+int all_room_peers_have_wrap(PeerWrapSession* peers, size_t peers_count, UserEntry* ue,
+                             uint32_t client_id)
 {
+    if (!peers || !ue)
+    {
+        return 0;
+    }
     for (int i = 0; i < MAX_CLIENTS; ++i)
     {
-        if (!ue[i].used)
+        if (!ue[i].used || ue[i].id == client_id)
         {
             continue;
         }

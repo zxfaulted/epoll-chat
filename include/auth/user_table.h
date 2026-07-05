@@ -20,6 +20,7 @@ const char* find_user_name_by_id(const UserEntry* ue, uint32_t id);
 int         room_has_peers(const UserEntry* ue);
 int         user_entry_exists(const UserEntry* ue, uint32_t id);
 int         am_room_leader(const Client* c, const UserEntry* ue);
+int         am_room_leader_excluding(const Client* c, const UserEntry* ue, uint32_t exclude_id);
 uint32_t    room_leader_id(const Client* c, const UserEntry* ue);
 
 #endif
