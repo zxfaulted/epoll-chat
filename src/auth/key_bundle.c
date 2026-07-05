@@ -902,8 +902,7 @@ int handle_kb(int epfd, uint8_t* data, uint16_t data_len, KeyBundle* my_kb,
 
         RoomSession* new_room = get_room_session(rooms, rooms_count, c->room_id);
 
-        ui_print_e2e("I am leader. Rekeyed room after key bundle from peer#%" PRIu32
-                     ", epoch=%" PRIu64,
+        ui_print_e2e("Rekeyed room after peer#%" PRIu32 " became ready, epoch=%" PRIu64,
                      kb->client_id, new_room ? get_room_epoch(new_room) : 0);
     }
 

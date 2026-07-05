@@ -662,7 +662,6 @@ int main(int argc, char** argv)
 
                                 if (was_leader_before_join && am_room_leader(c, ue))
                                 {
-<<<<<<< HEAD
                                     if (!find_peer_wrap_session(peers, MAX_CLIENTS, joined_id))
                                     {
                                         c->room_state = ROOM_WAIT_ROOM_KEY;
@@ -691,23 +690,6 @@ int main(int argc, char** argv)
                                     ui_print_e2e("Rekeyed room after join #%" PRIu32
                                                  ", epoch=%" PRIu64,
                                                  joined_id, room ? get_room_epoch(room) : 0);
-=======
-                                    c->room_state = ROOM_WAIT_ROOM_KEY;
-
-                                    if (rekey_current_room_auto(epfd, c, peers, MAX_CLIENTS, rooms,
-                                                                MAX_ROOMS, ue, c->room_id) < 0)
-                                    {
-                                        fprintf(stderr, "rekey_current_room_auto failed\n");
-                                        break;
-                                    }
-
-                                    if (c->room_state == ROOM_WAIT_ROOM_KEY)
-                                    {
-                                        ui_print_e2e("Waiting for wrapping keys before join rekey "
-                                                     "in room#%" PRIu32,
-                                                     c->room_id);
-                                    }
->>>>>>> fb65049 (update rekey logic)
                                 }
                                 else if (was_ready_before_join)
                                 {
